@@ -32,11 +32,13 @@
 
 import uiHtml from './ui.html';
 
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.5.0';
 const SESSION_TTL = 7 * 24 * 3600; // 会话有效期 7 天（秒）
 const COOKIE_NAME = 'cfib_session';
 // Turnstile 站点密钥是公开的（下发给前端渲染组件）；密钥是 Secret，只放在服务端。
-const TURNSTILE_SITE_KEY = '0x4AAAAAAGHCDGptGjnrqwmc';
+// 站点密钥可用环境变量 TURNSTILE_SITE_KEY 覆盖（部署自己的 Turnstile 时在 Dashboard
+// 加同名 Variable 即可，见 handleConfig）；不设置则使用内置默认值。
+const DEFAULT_TURNSTILE_SITE_KEY = '0x4AAAAAAGHCDGptGjnrqwmc';
 const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 // GitHub 单文件建议上限 50MB（硬上限 100MB）；base64 后请求体膨胀约 1/3，
 // 且 Workers 单请求内存约 128MB，50MB 是兼顾稳定与安全的最大值。
@@ -406,7 +408,7 @@ async function handleConfig(request, env) {
     },
     turnstile: {
       enabled: turnstileEnabled(env),
-      siteKey: TURNSTILE_SITE_KEY,
+      siteKey: env.TURNSTILE_SITE_KEY || DEFAULT_TURNSTILE_SITE_KEY,
     },
     features: { urlUpload: true, batchDelete: true, cdnSwitch: true, convert: true, paste: true, picgo: true },
     configured: authEnabled(env),

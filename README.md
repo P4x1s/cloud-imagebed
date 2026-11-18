@@ -1,6 +1,10 @@
-# CloudImageBed — 基于 Cloudflare Worker + GitHub 的图床 / 文件床
+# CloudImageBed — 基于 Cloudflare Workers + GitHub 的免费图床 / 文件床
 
-一个可直接用的图床与文件存储程序：**前端页面 + 后端 API 合并在一个 Cloudflare Worker 里**，用 **GitHub 仓库**做存储。支持图片即时预览、任意文件上传、下载、删除、复制链接。
+一个**零成本、免服务器**的图床与文件存储程序：前端页面 + 后端 API 合并在**单个 Cloudflare Worker** 里，用 **GitHub 仓库**做存储后端。适合博客图床、笔记附件、个人文件中转等场景。
+
+- **完全免费**：Cloudflare Workers 免费额度 + GitHub 仓库存储，无需购买任何服务
+- **单文件部署**：整个应用就是 `src/worker.js` 一个文件（内嵌前端页面），没有数据库、没有依赖服务
+- **自动压缩**：图片上传时自动转为 WebP 格式（压缩产物不超过 1MB），非图片文件原样保存
 
 ---
 
@@ -9,100 +13,174 @@
 直接双击打开 [`demo.html`](./demo.html)。
 
 - 这是**纯前端体验版**：输入任意口令即可进入。
-- 上传、预览、下载、删除、搜索、筛选、视图切换等交互与线上版**完全一致**。
-- 数据只存在你的浏览器里（localStorage），不会上传到任何服务器。刷新后仍在，清除浏览器数据即消失。
+- 上传、预览、下载、删除、搜索、筛选等交互与线上版**完全一致**。
+- 数据只存在你的浏览器里（localStorage），不会上传到任何服务器。
 
-> 用途：先确认界面和交互是否符合你的预期，再决定是否部署线上版。
-
-已实现的功能（v2.4.0，界面为克制的工具风格，无营销文案与无效开关）：
-- **多种上传方式**：拖拽、点击选择、`Ctrl/⌘ + V` 剪贴板粘贴、选择整个文件夹、URL 一键转存
-- **全部图片只保留 WebP**：上传后仅存 WebP，不再保留原图。PNG/WebP/BMP/GIF 等走 WASM（libwebp）**真无损**编码（通常比 PNG 更小）；JPEG 源用 0.95 高质量转码（源本身已有损，真无损只会放大体积）
-- **GIF 动图 → 无损动图 WebP**：自研 GIF 解析器逐帧解码（调色板/透明/交织/处置方式/延时/循环全保留）→ 每帧 VP8L 无损编码 → 组装动图 WebP 容器，**动画完整保留**，且动图 WebP 可正常播放；编码器加载失败自动降级保留原 GIF
-- **登录 Turnstile 人机验证**：登录前需通过 Cloudflare Turnstile 校验（站点密钥公开下发、密钥只在服务端），未配置密钥时自动关闭；Demo 模式跳过
-- **默认只显示 WebP**：文件库默认筛选「WebP」（旧数据里的历史原图会被隐藏）；点「全部 / 图片」可查看。视频、文档等非图片始终显示
-- **并发上传队列**：可选 1/3/5/10 并发，队列项带缩略图预览与实时进度
-- **CDN 线路切换**：默认 raw / jsDelivr / 国内镜像 / Worker 中继（自定义 `PUBLIC_BASE` 时多一项）；直链加载失败自动降级中继
-- **图片即时缩略图预览 + 大图灯箱**（← → 切换、Esc 关闭）
-- **一键复制 5 种格式**：URL / HTML / BBCode / Markdown / Markdown 带链接，支持一键复制全部
-- **批量管理**：多选文件后批量删除，支持 `Shift` 范围选（部分失败逐项报告）
-- **`Ctrl/⌘ + K`** 全局聚焦搜索；按文件名/扩展名搜索、WebP/全部/图片/视频/文件筛选、4 种排序、网格/列表视图
-- **PicGo 兼容**：`POST /api/upload` 支持 `Authorization: Bearer <口令>`，响应带顶层 `url` 字段（PicGo / PicList / Typora 可直接接入）
-- **安全加固**：魔数校验（防伪装）+ 禁 SVG（防 XSS）、口令常量时间比对、CORS 白名单（默认仅同源）、Content-Length 前置拦截、错误码人话化
-- 深浅双主题切换，适配桌面与手机；内置开放 API 文档面板
+> 用途：先确认界面和交互是否符合预期，再决定是否部署线上版。
 
 ---
 
-## 二、部署线上版
+## 二、功能一览
+
+- **多种上传方式**：拖拽、点击选择、`Ctrl/⌘ + V` 剪贴板粘贴、选择整个文件夹、URL 一键转存
+- **智能压缩（v2.5.0）**：
+  - 只压缩**图片**：PNG/WebP/BMP/GIF 等走 WASM（libwebp）真无损转 WebP；JPEG 源用 95% 高质量转码（源本身已有损）
+  - **压缩后的 WebP 保证不超过 1MB**：无损结果超限时自动「降级有损 → 降低质量 → 缩小尺寸」逐档重压，直到达标
+  - **GIF 动图 → 动图 WebP**：逐帧解码再编码，动画、时序、循环完整保留；超限时同样自动降档
+  - **非图片文件（视频/文档/压缩包等）不压缩**，原样上传保存
+  - URL 转存不压缩，保留远程文件的原始格式
+- **登录人机验证（可选）**：接入 Cloudflare Turnstile，未配置时自动关闭
+- **并发上传队列**：可选 1/3/5/10 并发，队列项带缩略图与实时进度
+- **CDN 线路切换**：raw 直链 / jsDelivr / 国内镜像 / Worker 中继；直链加载失败自动降级中继
+- **图片即时预览 + 大图灯箱**（← → 切换、Esc 关闭）
+- **一键复制 5 种格式**：URL / HTML / BBCode / Markdown / Markdown 带链接
+- **批量管理**：多选批量删除，支持 `Shift` 范围选
+- **`Ctrl/⌘ + K`** 全局搜索；WebP/图片/视频/文件筛选、4 种排序、网格/列表视图
+- **PicGo / PicList / Typora 兼容**：`POST /api/upload` 支持 Bearer 口令鉴权，可直接接入
+- **安全加固**：文件魔数校验（防伪装）、禁 SVG（防 XSS）、口令常量时间比对、CORS 白名单、URL 转存 SSRF 防护
+- 深浅双主题，适配桌面与手机；内置开放 API 文档面板
+
+---
+
+## 三、部署教程（从零开始，小白可照抄）
 
 ### 架构
 
 ```
-浏览器 ──HTTPS──> Cloudflare Worker ──GitHub API──> GitHub 仓库
-   │                    │                              │
-   └─ 页面来自 Worker ──┘                   文件以 commit 形式存储
-                                            图片走 raw / jsDelivr 直链预览
+浏览器 ──HTTPS──> Cloudflare Worker（页面 + API）──GitHub API──> 你的 GitHub 仓库
+                                                            （文件以 commit 形式存储）
 ```
 
-- 上传 ≤1MB：GitHub Contents API 一次提交
-- 上传 >1MB：Git Data API（blob → tree → commit → ref）
-- 访问口令校验后签发 HMAC 签名的 HttpOnly Cookie（7 天有效）
-- 服务端持 GitHub Token，前端永不接触
-- **v2.2 起：图床文件直接存进项目仓库的 `gallery/` 子目录**（源码与文件同仓库）。`deploy.yml` 用 `paths-ignore: gallery/**` 排除上传，避免每次传图触发一次部署。
+- 上传 ≤1MB 走 GitHub Contents API；更大走 Git Data API（blob → tree → commit → ref）
+- 访问口令校验后签发 HttpOnly 签名 Cookie（7 天有效）；GitHub Token 只存在服务端，前端永不接触
+- 上传的文件存进仓库的 `gallery/` 子目录（按 `年/月` 自动分目录）
 
-### 步骤
+### 准备工作
 
-**1. 准备存储仓库**
-- 新建一个 GitHub 仓库（建议空仓库，可设为私有）。
-- 生成 Personal Access Token：
-  - Classic token：勾选 `repo`（私有仓库）或 `public_repo`（公开仓库）。
-  - Fine-grained token：给对应仓库的 **Contents: read & write** 权限。
+1. 一个 **GitHub 账号**
+2. 一个 **Cloudflare 账号**（免费注册即可）
 
-**2. 改配置** — 编辑 `wrangler.toml` 的 `[vars]`：
+### 第 1 步：准备仓库与 Token
+
+1. **Fork 本项目**到你自己的账号（或新建仓库后把源码传上去）。
+2. 新建 GitHub Personal Access Token，给 Worker 存取文件用：
+   - 打开 GitHub → 右上角头像 → **Settings → Developer settings → Personal access tokens → Tokens (classic)** → **Generate new token (classic)**
+   - 勾选 **`repo`** 权限（整个大类）
+   - 生成后**立即复制** `ghp_...`（页面关掉就看不到了），后面记作 **`<GITHUB_TOKEN>`**
+
+> ⚠️ 如果你用的是 Fork 仓库：打开 `.github/workflows/deploy.yml`，把其中的 `if: github.repository_owner == '...'` 这一行删除或改成你的用户名，否则自动部署不会触发。
+
+### 第 2 步：修改 wrangler.toml
+
+编辑 `wrangler.toml` 的 `[vars]`，改成你自己的值：
+
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `REPO` | 存储仓库（本项目=源码仓库本身） | `zhangsan/my-project` |
+| `REPO` | 存储文件的仓库（建议就填 Fork 出来的仓库本身） | `your-name/your-repo` |
 | `BRANCH` | 分支 | `main` |
-| `DIR_PREFIX` | 图床根目录（仓库内文件夹） | `gallery`（上传落 `gallery/YYYY/MM/`，留空=仓库根目录） |
-| `MAX_UPLOAD_MB` | 单文件上限（GitHub 建议 ≤50MB，硬上限 100MB；base64 膨胀约 1/3） | `50` |
-| `PUBLIC_BASE` | 图片直链前缀 | 留空用 raw；或 `https://cdn.jsdelivr.net/gh/zhangsan/my-project@main/gallery` |
-| `ALLOWED_ORIGINS` | CORS 白名单，逗号分隔具体域名；留空=仅同源（最严格，推荐） | `https://a.example,https://b.example` |
+| `DIR_PREFIX` | 文件存储目录（仓库内文件夹），留空=仓库根目录 | `gallery` |
+| `MAX_UPLOAD_MB` | 单文件上限（GitHub 硬上限 100MB，建议 ≤50） | `50` |
+| `PUBLIC_BASE` | 图片直链前缀，留空用 raw 直链 | 留空，或 `https://cdn.jsdelivr.net/gh/your-name/your-repo@main` |
+| `ALLOWED_ORIGINS` | CORS 白名单，留空=仅同源（推荐） | 留空 |
 
-> 若 `REPO` 指向源码仓库并设了 `DIR_PREFIX`，记得在 `.github/workflows/deploy.yml` 的 `push` 里加 `paths-ignore: '<DIR_PREFIX>/**'`，否则每次上传图片都会触发一次部署。本仓库已按 `gallery` 配好。
+> 若 `REPO` 填的是源码仓库本身且 `DIR_PREFIX=gallery`，无需其他改动——`deploy.yml` 已用 `paths-ignore: gallery/**` 排除上传文件触发的重复部署。
 
-**3. 设置 Secret（二选一）**
-- 本地开发：复制 `.dev.vars.example` 为 `.dev.vars`，填入真实值，运行 `wrangler dev`。
-- 线上：在 Dashboard → Worker → Settings → Variables and Secrets 添加：
-  - `GITHUB_TOKEN` = 上面的 token
-  - `ACCESS_PASSWORD` = 自定义访问口令
-  - `TURNSTILE_SECRET_KEY` = Cloudflare Turnstile 密钥（登录人机校验用；站点密钥已内置在代码中公开下发，密钥绝不写进仓库）
+### 第 3 步：配置 GitHub Actions（自动部署用）
 
-**4. 部署**
+打开你的仓库 → **Settings → Secrets and variables → Actions**，添加两条 **Secret**：
+
+| Name | Value |
+|------|-------|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token，见下方获取方法 |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 账户 ID |
+
+获取方法：
+
+- **API Token**：打开 Cloudflare Dashboard → 右上角头像 → **My Profile → API Tokens → Create Token** → 选模板 **Edit Cloudflare Workers** → Create → 复制。
+- **Account ID**：Cloudflare Dashboard 首页右侧栏，或任意 Worker 页面 URL 里那串 32 位字符。
+
+### 第 4 步：触发部署
+
+把改动推送到仓库 `main` 分支（Fork 后改完 `wrangler.toml` 提交即可），或到仓库 **Actions** 页面手动 **Run workflow**。
+
+等 1–2 分钟变绿 ✅ 即部署成功。之后每次 push 源码都会自动重新部署（上传图片不会触发）。
+
+### 第 5 步：配置 Worker 运行时密钥
+
+首次部署后，Cloudflare Dashboard → **Workers & Pages** → 找到你的 Worker → **Settings → Variables and Secrets**，添加：
+
+| Name | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `GITHUB_TOKEN` | **Secret** | ✅ | 第 1 步的 `<GITHUB_TOKEN>` |
+| `ACCESS_PASSWORD` | **Secret** | ✅ | 自定义访问口令（前端登录用） |
+| `TURNSTILE_SITE_KEY` | Variable | ⬜ | Turnstile **站点密钥**（启用登录人机验证才需要） |
+| `TURNSTILE_SECRET_KEY` | **Secret** | ⬜ | Turnstile **密钥**（与站点密钥配对使用） |
+
+> 🔐 **Turnstile（可选）**：到 Cloudflare Dashboard → **Turnstile** → Add site，创建一个组件，拿到站点密钥（公开，前端用）和密钥（保密，服务端用），分别填入上面两处。两项都配置后登录页会出现人机验证；不配置则自动跳过该验证。
+>
+> ⚠️ **这几条必须在 Cloudflare Dashboard 配**，不要写进仓库文件。
+
+### 第 6 步：访问
+
+打开 `https://<你的worker名>.<你的子域>.workers.dev`，输入访问口令即可使用。
+
+### 替代方式：本地命令行部署
+
+不想用 GitHub Actions，也可以本地部署：
+
 ```bash
-# 本地命令行部署（务必带 --keep-vars）
+npm install -g wrangler
+wrangler login
+wrangler secret put GITHUB_TOKEN      # 粘贴 <GITHUB_TOKEN>
+wrangler secret put ACCESS_PASSWORD   # 粘贴你的口令
 wrangler deploy --keep-vars
 ```
-或推送到 GitHub 触发 `.github/workflows/deploy.yml` 自动部署（需先在仓库 Secrets 配 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`）。
 
-> ⚠️ **关键提醒**：`wrangler deploy` 默认会清空 Dashboard 上的全部变量和 Secret。必须带 `--keep-vars`，否则 `GITHUB_TOKEN` / `ACCESS_PASSWORD` / `TURNSTILE_SECRET_KEY` 会丢失，图床立刻不可用。GitHub Actions 里已内置该参数。
-
-> 🔐 **Turnstile 说明**：登录页会在输入框下方渲染 Cloudflare Turnstile 组件，校验在服务端完成（`/api/login` 调用 `siteverify`，密钥只在 Worker Secret 里）。未设置 `TURNSTILE_SECRET_KEY` 时自动跳过验证（方便本地开发与平滑升级）；设置后登录必须先通过人机校验。Demo（本地 `demo.html`）始终跳过。
-
-**5. 访问**
-- 打开 `https://<你的worker名>.<你的子域>.workers.dev`，输入访问口令即可。
-
-### 关于图片预览直链
-
-- 若存储仓库是**公开**的：留空 `PUBLIC_BASE`，图片用 `raw.githubusercontent.com` 直链即可预览。为加速国内访问，可填 jsDelivr CDN 前缀。
-- 若存储仓库是**私有**的：raw 直链需鉴权，此时留空 `PUBLIC_BASE`，前端会自动走 `/api/download` 代理接口预览（服务端带 token 访问）。
+> ⚠️ **关键提醒**：`wrangler deploy` 默认会清空 Dashboard 上的全部变量和 Secret，必须带 `--keep-vars`。
 
 ---
 
-## 三、API 一览
+## 四、使用说明
+
+### 上传与压缩规则（v2.5.0）
+
+| 你上传的内容 | 实际存储结果 |
+|------|------|
+| PNG / WebP / BMP 等静态图 | WebP（优先真无损；超过 1MB 自动降为高质量有损/缩放，保证 ≤1MB） |
+| JPEG | WebP（95% 高质量转码；超过 1MB 自动降档，保证 ≤1MB） |
+| GIF 动图 | 动图 WebP（动画完整保留；超过 1MB 自动降档，保证 ≤1MB） |
+| 视频 / 文档 / 压缩包等 | **原样存储，不做任何处理** |
+| URL 转存 | **原样存储**（保留远程文件原始格式，不压缩） |
+
+上传完成后队列和提示会显示压缩前后体积（如 `2.3MB→890.4KB（WebP）`）。
+
+### 日常操作
+
+- **复制链接**：文件卡片悬停 → 链接图标，或点开大图后「复制链接」；5 种格式一键复制
+- **切换 CDN 线路**：上传设置里选「默认线路 / jsDelivr / 国内镜像 / Worker 中继」，影响生成的直链地址
+- **删除**：单删或开「批量管理」多选删除（不可恢复，谨慎操作）
+- **搜索**：`Ctrl/⌘ + K` 快速聚焦搜索框
+
+### 存储仓库是公开还是私有？
+
+- **公开仓库**：raw / jsDelivr 直链可直接访问（图床最常用）。
+- **私有仓库**：raw 直链需鉴权，前端会自动走 `/api/download` 服务端代理预览，功能不受影响，但图片无法作为外链使用。
+
+### 接入 PicGo / PicList / Typora
+
+- **上传地址**：`https://<你的worker域>/api/upload`
+- **表单字段**：`file`
+- **鉴权**：请求头 `Authorization: Bearer <你的访问口令>`
+- **返回**：JSON 顶层 `url` 字段即图片直链
+
+---
+
+## 五、API 一览
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/` | 前端页面 |
-| GET | `/health` | 健康检查（含版本指纹） |
+| GET | `/health` | 健康检查（含版本号） |
 | GET | `/api/config` | 公开配置 |
 | POST | `/api/login` | 登录，`{ password }` |
 | POST | `/api/logout` | 登出 |
@@ -113,49 +191,57 @@ wrangler deploy --keep-vars
 | DELETE | `/api/file?path=&sha=` | 删除单个文件（需登录） |
 | POST | `/api/files/batch-delete` | 批量删除（需登录），`{ items:[{path,sha}] }` |
 
-### PicGo / PicList / Typora 接入
+---
 
-上传接口同时兼容第三方客户端：
+## 六、常见问题
 
-- **上传地址**：`https://<你的worker域>/api/upload`
-- **表单字段**：`file`（PicGo 自定义图床里字段名填 `file`）
-- **鉴权**：请求头加 `Authorization: Bearer <你的访问口令>`（无需 Cookie）
-- **返回**：`{ "ok": true, "url": "https://raw...", "item": { ... } }`，顶层 `url` 即图片直链
+**Q：部署后打开是「未配置」报错？**
+A：第 5 步的 `GITHUB_TOKEN` / `REPO` 没配好。确认 Dashboard Secret 已加、`wrangler.toml` 的 `REPO` 指向你自己的仓库，然后重新部署。
 
-PicGo 自定义图床配置示例：URL 填上面地址，请求头加一行 `Authorization: Bearer 你的口令`，上传字段名 `file`，返回数据在 JSON 的 `url` 字段。
+**Q：登录后上传报 401 / 失败？**
+A：检查 `GITHUB_TOKEN` 是否有效、是否勾了 `repo` 权限、`REPO` 是否写对（`用户名/仓库名`）。
+
+**Q：`wrangler deploy` 之后登录不了？**
+A：大概率忘了 `--keep-vars`，Dashboard 上的 Secret 被清空了。重新添加第 5 步的密钥即可。
+
+**Q：Actions 部署失败？**
+A：99% 是第 3 步密钥没配或配错，看 Actions 日志的具体报错。Fork 仓库还要确认删除了 `deploy.yml` 里的 owner 限制行。
+
+**Q：GIF 没有转成 WebP？**
+A：编码器加载失败、或所有降档后仍超过 1MB 时，会保留原 GIF（非 WebP 产物不受 1MB 约束）。这是兜底策略，保证文件不丢。
+
+**Q：图片直链在国内打开很慢？**
+A：前端切换「jsDelivr / 国内镜像」线路；或把 `PUBLIC_BASE` 配成 jsDelivr 前缀。注意 CDN 有缓存，新文件可能几分钟才生效。
+
+**Q：文件存在哪里？能看到吗？**
+A：存在你配置的 GitHub 仓库 `gallery/年/月/` 目录下，文件名为北京时间时间戳；在仓库页面可以直接浏览。
 
 ---
 
-## 四、目录结构
+## 七、目录结构与测试
 
 ```
-cf-imagebed/
 ├── demo.html              # 零配置体验版（双击打开）
 ├── src/
 │   ├── ui.html            # 前端页面源码（Demo 与线上共用）
-│   └── worker.js          # Worker 后端源码
+│   └── worker.js          # Worker 后端源码（单文件应用）
 ├── wrangler.toml          # Worker 配置
-├── .dev.vars.example      # 本地 Secret 模板
-├── .github/workflows/     # 自动部署
-├── tests/                 # 回归测试（构建 + API 全链路，mock GitHub）
-│   ├── build-check.cjs
-│   └── worker.test.mjs
-└── dist/                  # 本地验证产物（可忽略）
+├── .dev.vars.example      # 本地开发 Secret 模板
+├── .github/workflows/     # GitHub Actions 自动部署
+└── tests/                 # 回归测试
 ```
 
-回归测试（可选，需本机装了 esbuild 与 Node）：
+本地回归测试（可选，需 Node.js）：
+
 ```bash
-node tests/build-check.cjs   # 验证 Worker 可打包、语法无误
-node tests/worker.test.mjs   # 验证鉴权/上传/列出/下载/删除全链路（含大文件分支）
+node tests/build-check.cjs    # 验证 Worker 可打包、语法无误
+node tests/worker.test.mjs    # 验证鉴权/上传/列出/下载/删除全链路（mock GitHub）
 ```
 
 ---
 
-## 五、后续可迭代方向（待你的体验反馈）
+## 八、备份与安全建议
 
-- 生成缩略图 / 按目录分组浏览（省 GitHub 空间、便于管理）
-- 自定义短链 / 随机文件名映射
-- 上传白名单（限制文件类型 / MIME）与去重
-- 访问口令多次输错限速（配合 Turnstile 人机验证）
-- 图床外链防盗链、水印
-- 过期文件自动清理（GitHub 存储需配合定时任务）
+- 上传的文件就是 GitHub 仓库里的 commit，天然有版本历史；重要数据建议定期把 `gallery/` 目录备份到本地或其他存储。
+- 务必设置强 `ACCESS_PASSWORD`；开启了 Turnstile 后可有效拦截脚本刷口令。
+- `GITHUB_TOKEN` 等所有密钥只放在 Cloudflare Dashboard / GitHub Secrets，**永远不要提交进仓库**。
