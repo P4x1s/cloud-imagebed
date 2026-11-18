@@ -8,8 +8,9 @@
 > | 源码仓库 | `P4x1s/cloud-imagebed`（仅项目文件，main 分支；原名 CGIH）|
 > | **文件存储仓库** | **`P4x1s/cloud-imagebed-file`（公开、main 分支；原名 CGIH-FILE）** |
 > | Worker 名称 | `cloud-imagebed`（REPO=`P4x1s/cloud-imagebed-file`、`BRANCH=main`）|
-> | 目录结构 | 年月优先：`<YYYY>/<MM>/<时间戳>-<随机>-<文件名>`，如 `2026/11/179498...-a1b2c3d4-pic.png` |
-> | 图片直链 | `https://raw.githubusercontent.com/P4x1s/cloud-imagebed-file/main/<YYYY>/<MM>/<文件>` |
+> | 目录结构 | 年月优先：`<YYYY>/<MM>/<时间戳文件名>`，如 `2026/11/2026111815365012.png` |
+> | 文件名规则 | 北京时间 `YYYYMMDDhhmmss` + 2 位毫秒 + 扩展名，共 16 位数字前缀，如 `2026111815365012.png` |
+> | 图片直链 | `https://raw.githubusercontent.com/P4x1s/cloud-imagebed-file/main/<YYYY>/<MM>/<时间戳文件名>` |
 > | 已完成清理 | 旧 `CGIH/storage` 分支已删除（SHA `d9db408...` 可恢复）；两个仓库已重命名 |
 > | 迁移清单 | 见 `MIGRATION_MANIFEST.md`、`REPO_MIGRATION_PLAN.md` |
 >
