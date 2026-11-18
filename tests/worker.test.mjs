@@ -186,7 +186,7 @@ r = await worker.fetch(req('/'), env);
 check('homepage html', r.headers.get('Content-Type').includes('text/html') && (await r.text()).includes('CloudImageBed'));
 r = await worker.fetch(req('/health'), env);
 d = await r.json();
-check('health version', d.version === '2.1.0');
+check('health version', d.version === '2.2.0');
 
 // 10) 年月优先目录（线上真实配置：DIR_PREFIX 为空）—— 所有类型都落到 YYYY/MM/
 const envClean = { ...env, DIR_PREFIX: '' };
@@ -228,7 +228,7 @@ if (bigItem) {
 // 11) config v2 新字段
 r = await worker.fetch(req('/api/config'), env);
 d = await r.json();
-check('config version 2', d.version === '2.1.0');
+check('config version 2', d.version === '2.2.0');
 check('config maxUploadMB default', d.maxUploadMB === 25, 'maxUploadMB=' + d.maxUploadMB);
 check('config repo/branch', d.repo === 'test/repo' && d.branch === 'main');
 check('config features', !!(d.features && d.features.urlUpload && d.features.batchDelete && d.features.cdnSwitch && d.features.convert && d.features.paste));
@@ -281,6 +281,56 @@ d = await r.json();
 check('empty repo list status 200', r.status === 200, 'status=' + r.status);
 check('empty repo list ok + empty items', d.ok === true && Array.isArray(d.items) && d.items.length === 0, JSON.stringify(d).slice(0, 160));
 trees404 = false;
+
+// 16) PicGo 兼容：Bearer 口令鉴权 + 顶层 url 字段
+const fdP = new FormData();
+fdP.append('file', new Blob(['x'], { type: 'application/octet-stream' }), 'picgo.png');
+r = await worker.fetch(req('/api/upload', {
+  method: 'POST', headers: { Authorization: 'Bearer secret123' }, body: fdP,
+}), env);
+d = await r.json();
+check('picgo bearer auth upload ok', d.ok === true && !!d.url, JSON.stringify(d).slice(0, 160));
+check('picgo top-level url == item.url', d.url === d.item.url);
+r = await worker.fetch(req('/api/upload', {
+  method: 'POST', headers: { Authorization: 'Bearer wrong' }, body: fdP,
+}), env);
+check('picgo wrong bearer 401', r.status === 401, 'status=' + r.status);
+
+// 17) config 新字段：cdnMirrors / picgo / features.picgo
+r = await worker.fetch(req('/api/config'), env);
+d = await r.json();
+check('config cdnMirrors present', Array.isArray(d.cdnMirrors) && d.cdnMirrors.length >= 1);
+check('config picgo.enabled', !!(d.picgo && d.picgo.enabled && d.features.picgo));
+
+// 18) 魔数校验：声明 image/png 但内容不是 PNG → 415 拒绝
+const fdFake = new FormData();
+fdFake.append('file', new Blob(['not-a-real-png'], { type: 'image/png' }), 'fake.png');
+r = await worker.fetch(req('/api/upload', { method: 'POST', headers: { Cookie: session }, body: fdFake }), env);
+d = await r.json();
+check('magic mismatch rejected 415', r.status === 415 && /魔数/.test(d.error || ''), JSON.stringify(d));
+// 真 PNG 魔数 → 通过
+const realPng = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1]);
+const fdReal = new FormData();
+fdReal.append('file', new Blob([realPng], { type: 'image/png' }), 'real.png');
+r = await worker.fetch(req('/api/upload', { method: 'POST', headers: { Cookie: session }, body: fdReal }), env);
+check('real png magic accepted', r.status === 200, 'status=' + r.status);
+
+// 19) SVG 拒绝（XSS 防护）
+const fdSvg = new FormData();
+fdSvg.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'], { type: 'image/svg+xml' }), 'bad.svg');
+r = await worker.fetch(req('/api/upload', { method: 'POST', headers: { Cookie: session }, body: fdSvg }), env);
+d = await r.json();
+check('svg rejected 415', r.status === 415 && /SVG/.test(d.error || ''), JSON.stringify(d));
+
+// 20) CORS：白名单外的 Origin 不加头；白名单内回显
+const envCors = { ...env, ALLOWED_ORIGINS: 'https://good.example' };
+r = await worker.fetch(req('/api/config', { headers: { Origin: 'https://evil.example' } }), envCors);
+check('cors origin not allowed -> no header', !r.headers.get('Access-Control-Allow-Origin'));
+r = await worker.fetch(req('/api/config', { headers: { Origin: 'https://good.example' } }), envCors);
+check('cors origin allowed -> echoed', r.headers.get('Access-Control-Allow-Origin') === 'https://good.example');
+check('cors never wildcard', r.headers.get('Access-Control-Allow-Origin') !== '*');
+r = await worker.fetch(req('/api/config', { method: 'OPTIONS', headers: { Origin: 'https://good.example' } }), envCors);
+check('cors preflight 204', r.status === 204);
 
 globalThis.fetch = origFetch;
 console.log('\n==== WORKER TEST RESULTS ====');

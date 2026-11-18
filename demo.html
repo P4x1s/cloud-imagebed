@@ -313,6 +313,7 @@
           <div class="seg" id="cdnSeg">
             <button data-cdn="raw" class="active">默认线路</button>
             <button data-cdn="jsdelivr">jsDelivr</button>
+            <button data-cdn="jsdmirror">国内镜像</button>
             <button data-cdn="proxy">Worker 中继</button>
             <button data-cdn="custom" id="cdnCustomBtn" class="hidden">自定义</button>
           </div>
@@ -344,7 +345,7 @@
     <div class="toolbar">
       <div class="search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
-        <input type="text" id="searchInput" placeholder="搜索文件名、扩展名…">
+        <input type="text" id="searchInput" placeholder="搜索文件名、扩展名… (Ctrl+K)">
       </div>
       <div class="seg" id="filterSeg">
         <button data-filter="all" class="active">全部</button>
@@ -445,7 +446,7 @@ Content-Type: application/json
   var API_BASE = window.API_BASE || '';
   var state = {
     items:[], filter:'all', sort:'new', view:'grid', search:'', authed:false, config:null,
-    lbIndex:-1, cdn:'raw', format:'original', concurrent:3, batch:false, selected:{}
+    lbIndex:-1, cdn:'raw', format:'original', concurrent:3, batch:false, selected:{}, lastPickIdx:-1
   };
 
   /* ---------------- 工具 ---------------- */
@@ -479,10 +480,18 @@ Content-Type: application/json
     var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();
     try{document.execCommand('copy');}catch(e){}ta.remove();return Promise.resolve();
   }
+  /* HTTP 状态码翻译成人话，不再只甩数字 */
+  function errMsg(status,raw){
+    var m={400:'请求有误，请检查后重试',401:'登录已失效，请重新输入口令',403:'没有权限访问该资源',
+      404:'资源不存在或仓库为空',413:'文件太大，超出上限',415:'文件类型不被接受（SVG 不支持）',
+      422:'GitHub 拒绝了写入，请重试',429:'操作太频繁，请稍后再试',500:'服务端开小差了，请稍后重试',
+      502:'存储服务暂时不可用，请稍后再试'};
+    if(status===401)return {unauthorized:true,message:m[401]};
+    return {unauthorized:false,message:m[status]||(raw||('请求失败 (HTTP '+status+')'))};
+  }
   function qs(url){
     return fetch(url,{credentials:'same-origin'}).then(function(r){
-      if(r.status===401)throw new Error('unauthorized');
-      if(!r.ok)throw new Error('HTTP '+r.status);
+      if(!r.ok){var e=errMsg(r.status);var er=new Error(e.message);er.unauthorized=e.unauthorized;throw er;}
       return r.json();
     });
   }
@@ -499,6 +508,9 @@ Content-Type: application/json
     var cfg=state.config||{};
     if(state.cdn==='jsdelivr'&&cfg.repo){
       return 'https://cdn.jsdelivr.net/gh/'+cfg.repo+'@'+encodeURIComponent(cfg.branch||'main')+'/'+encPath(p);
+    }
+    if(state.cdn==='jsdmirror'&&cfg.repo){
+      return 'https://cdn.jsdmirror.cn/gh/'+cfg.repo+'@'+encodeURIComponent(cfg.branch||'main')+'/'+encPath(p);
     }
     if(state.cdn==='proxy'){
       return location.origin+(API_BASE||'')+'/api/download?path='+encodeURIComponent(p);
@@ -572,9 +584,10 @@ Content-Type: application/json
       xhr.upload.onprogress=function(e){if(e.lengthComputable)onProgress(Math.round(e.loaded/e.total*90));};
       xhr.onload=function(){
         var data;try{data=JSON.parse(xhr.responseText);}catch(e){data={};}
-        if(xhr.status===401)return rej(new Error('unauthorized'));
         if(xhr.status>=200&&xhr.status<300&&data.ok!==false){onProgress(100);return res(data);}
-        rej(new Error(data.error||('HTTP '+xhr.status)));
+        var em=errMsg(xhr.status,data.error);
+        var ee=new Error(em.message);ee.unauthorized=em.unauthorized;
+        return rej(ee);
       };
       xhr.onerror=function(){rej(new Error('网络错误'));};
       xhr.send(fd);
@@ -644,9 +657,16 @@ Content-Type: application/json
     });
     return list;
   }
+  /* 图片直链加载失败 → 自动降级到 Worker 中继（最多一次，避免死循环） */
+  function imgFallback(el){
+    if(el.getAttribute('data-fb')==='1')return;
+    el.setAttribute('data-fb','1');
+    el.src=location.origin+(API_BASE||'')+'/api/download?path='+encodeURIComponent(el.getAttribute('data-path')||'');
+  }
+  window.imgFallback=imgFallback; // onerror 内联属性在全局作用域调用
   function thumbHTML(it){
     var u=esc(itemUrl(it));
-    if(isImage(it.type))return '<img src="'+u+'" loading="lazy" alt="'+esc(it.name)+'">';
+    if(isImage(it.type))return '<img src="'+u+'" loading="lazy" alt="'+esc(it.name)+'" data-path="'+esc(it.path||it.name||'')+'" onerror="imgFallback(this)">';
     if(isVideo(it.type))return '<div class="file-ico"><div class="video-play"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div><span class="ext">'+esc(extOf(it.name))+'</span></div>';
     return '<div class="file-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="ext">'+esc(extOf(it.name))+'</span></div>';
   }
@@ -677,10 +697,11 @@ Content-Type: application/json
     });
 
     Array.prototype.forEach.call($('grid').querySelectorAll('.thumb'),function(el){
-      el.addEventListener('click',function(){
-        var it=filtered()[parseInt(el.getAttribute('data-idx'),10)];
+      el.addEventListener('click',function(e){
+        var idx=parseInt(el.getAttribute('data-idx'),10);
+        var it=filtered()[idx];
         if(!it)return;
-        if(state.batch){togglePick(it);return;}
+        if(state.batch){togglePick(it,idx,e.shiftKey);return;}
         if(isImage(it.type))openLightbox(filtered().indexOf(it));
         else if(it.downloadUrl)window.open(it.downloadUrl,'_blank');
       });
@@ -688,8 +709,9 @@ Content-Type: application/json
     Array.prototype.forEach.call($('grid').querySelectorAll('[data-pick]'),function(el){
       el.addEventListener('click',function(e){
         e.stopPropagation();
-        var it=filtered()[parseInt(el.getAttribute('data-pick'),10)];
-        if(it)togglePick(it);
+        var idx=parseInt(el.getAttribute('data-pick'),10);
+        var it=filtered()[idx];
+        if(it)togglePick(it,idx,e.shiftKey);
       });
     });
     Array.prototype.forEach.call($('grid').querySelectorAll('[data-act]'),function(btn){
@@ -704,9 +726,18 @@ Content-Type: application/json
     });
     updateSelBar();
   }
-  function togglePick(it){
-    if(state.selected[it.path])delete state.selected[it.path];
-    else state.selected[it.path]=it;
+  function togglePick(it,idx,shift){
+    idx=typeof idx==='number'?idx:filtered().indexOf(it);
+    var list=filtered();
+    if(shift&&state.lastPickIdx>=0&&state.lastPickIdx<list.length){
+      // Shift 范围选：把上次点击到本次之间的全部勾选
+      var a=Math.min(state.lastPickIdx,idx),b=Math.max(state.lastPickIdx,idx);
+      for(var i=a;i<=b;i++)state.selected[list[i].path]=list[i];
+    }else{
+      if(state.selected[it.path])delete state.selected[it.path];
+      else state.selected[it.path]=it;
+    }
+    state.lastPickIdx=idx;
     render();
   }
   function updateSelBar(){
@@ -737,7 +768,7 @@ Content-Type: application/json
   function openLinks(it){
     if(!it)return;
     var u=itemUrl(it);
-    var lineName={raw:'默认线路',jsdelivr:'jsDelivr',proxy:'Worker 中继',custom:'自定义 CDN'}[state.cdn]||'默认线路';
+    var lineName={raw:'默认线路',jsdelivr:'jsDelivr',jsdmirror:'国内镜像',proxy:'Worker 中继',custom:'自定义 CDN'}[state.cdn]||'默认线路';
     $('lnkLine').textContent=lineName;
     $('lnkDirect').value=u;
     $('lnkMd').value=isImage(it.type)?('!['+it.name+']('+u+')'):('['+it.name+']('+u+')');
@@ -799,7 +830,7 @@ Content-Type: application/json
               return refresh();
             }).catch(function(e){
               q.status='err';q.error=e.message;renderQueue();
-              if(e.message==='unauthorized'){logout();return;}
+              if(e.unauthorized||e.message==='unauthorized'){logout();return;}
               toast('上传失败：'+f.name+' · '+e.message,'err');
             }).then(function(){active--;next();});
           }).catch(function(){active--;next();});
@@ -833,7 +864,7 @@ Content-Type: application/json
       });
       state.selected={};render();
     }).catch(function(e){
-      if(e.message==='unauthorized'){logout();return;}
+      if(e.unauthorized||e.message==='unauthorized'){logout();return;}
       toast('加载失败：'+e.message,'err');
     });
   }
@@ -941,7 +972,7 @@ Content-Type: application/json
 
     bindSeg('cdnSeg','cdn',function(){
       var ok=true;
-      if(state.cdn==='jsdelivr'&&!(state.config&&state.config.repo))ok=false;
+      if((state.cdn==='jsdelivr'||state.cdn==='jsdmirror')&&!(state.config&&state.config.repo))ok=false;
       if(state.cdn==='custom'&&!(state.config&&state.config.publicBase))ok=false;
       if(!ok)toast('当前未配置该线路所需信息，直链不可用','err');
       render(); // 切换线路后立即按新地址重渲染缩略图/直链
@@ -959,7 +990,7 @@ Content-Type: application/json
 
     $('btnBatchMode').addEventListener('click',function(){
       state.batch=!state.batch;state.selected={};render();
-      toast(state.batch?'批量管理已开启：点击文件左上角勾选':'已退出批量管理','ok');
+      toast(state.batch?'批量管理已开启：点击勾选，Shift 可范围选':'已退出批量管理','ok');
     });
     $('btnExitBatch').addEventListener('click',function(){state.batch=false;state.selected={};render();});
     $('btnSelectAll').addEventListener('click',function(){
@@ -988,6 +1019,10 @@ Content-Type: application/json
       var list=filtered(),it=list[state.lbIndex];if(it)download(it);
     });
     document.addEventListener('keydown',function(e){
+      // Ctrl+K / ⌘K：全局聚焦搜索框
+      if((e.ctrlKey||e.metaKey)&&(e.key==='k'||e.key==='K')){
+        e.preventDefault();$('searchInput').focus();$('searchInput').select();return;
+      }
       if($('lightbox').classList.contains('hidden'))return;
       if(e.key==='Escape')$('lightbox').classList.add('hidden');
       if(e.key==='ArrowLeft')lbMove(-1);

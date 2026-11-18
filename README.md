@@ -14,17 +14,18 @@
 
 > 用途：先确认界面和交互是否符合你的预期，再决定是否部署线上版。
 
-已实现的功能（v2.1，界面重做为克制的工具风格，移除了营销文案与无效开关）：
+已实现的功能（v2.2，界面为克制的工具风格，无营销文案与无效开关）：
 - **多种上传方式**：拖拽、点击选择、`Ctrl/⌘ + V` 剪贴板粘贴、选择整个文件夹、URL 一键转存
 - **并发上传队列**：可选 1/3/5/10 并发，实时进度
 - **上传前格式转换**：浏览器本地 Canvas 把图片转为 WebP / JPEG / PNG（GIF 等动图保持原样）
-- **CDN 线路切换**：默认 raw / jsDelivr 加速 / Worker 中继（自定义 `PUBLIC_BASE` 时多一项）
+- **CDN 线路切换**：默认 raw / jsDelivr / 国内镜像 / Worker 中继（自定义 `PUBLIC_BASE` 时多一项）；直链加载失败自动降级中继
 - **图片即时缩略图预览 + 大图灯箱**（← → 切换、Esc 关闭）
 - **一键复制 4 种格式**：直链 / Markdown / HTML / BBCode
-- **批量管理**：多选文件后批量删除（部分失败会逐项报告）
-- 按文件名/扩展名搜索、图片/视频/文件筛选、4 种排序、网格/列表视图
-- 深浅双主题切换，适配桌面与手机
-- 内置开放 API 文档面板
+- **批量管理**：多选文件后批量删除，支持 `Shift` 范围选（部分失败逐项报告）
+- **`Ctrl/⌘ + K`** 全局聚焦搜索；按文件名/扩展名搜索、图片/视频/文件筛选、4 种排序、网格/列表视图
+- **PicGo 兼容**：`POST /api/upload` 支持 `Authorization: Bearer <口令>`，响应带顶层 `url` 字段（PicGo / PicList / Typora 可直接接入）
+- **安全加固**：魔数校验（防伪装）+ 禁 SVG（防 XSS）、口令常量时间比对、CORS 白名单（默认仅同源）、Content-Length 前置拦截、错误码人话化
+- 深浅双主题切换，适配桌面与手机；内置开放 API 文档面板
 
 ---
 
@@ -43,6 +44,7 @@
 - 上传 >1MB：Git Data API（blob → tree → commit → ref）
 - 访问口令校验后签发 HMAC 签名的 HttpOnly Cookie（7 天有效）
 - 服务端持 GitHub Token，前端永不接触
+- **v2.2 起：图床文件直接存进项目仓库的 `gallery/` 子目录**（源码与文件同仓库）。`deploy.yml` 用 `paths-ignore: gallery/**` 排除上传，避免每次传图触发一次部署。
 
 ### 步骤
 
@@ -55,11 +57,14 @@
 **2. 改配置** — 编辑 `wrangler.toml` 的 `[vars]`：
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `REPO` | 存储仓库 | `zhangsan/my-imagebed` |
+| `REPO` | 存储仓库（本项目=源码仓库本身） | `zhangsan/my-project` |
 | `BRANCH` | 分支 | `main` |
-| `DIR_PREFIX` | 仓库内目录前缀 | `images`（留空=根目录） |
+| `DIR_PREFIX` | 图床根目录（仓库内文件夹） | `gallery`（上传落 `gallery/YYYY/MM/`，留空=仓库根目录） |
 | `MAX_UPLOAD_MB` | 单文件上限（GitHub 建议 ≤50MB，硬上限 100MB；base64 膨胀约 1/3） | `50` |
-| `PUBLIC_BASE` | 图片直链前缀 | 留空用 raw；或 `https://cdn.jsdelivr.net/gh/zhangsan/my-imagebed@main` |
+| `PUBLIC_BASE` | 图片直链前缀 | 留空用 raw；或 `https://cdn.jsdelivr.net/gh/zhangsan/my-project@main/gallery` |
+| `ALLOWED_ORIGINS` | CORS 白名单，逗号分隔具体域名；留空=仅同源（最严格，推荐） | `https://a.example,https://b.example` |
+
+> 若 `REPO` 指向源码仓库并设了 `DIR_PREFIX`，记得在 `.github/workflows/deploy.yml` 的 `push` 里加 `paths-ignore: '<DIR_PREFIX>/**'`，否则每次上传图片都会触发一次部署。本仓库已按 `gallery` 配好。
 
 **3. 设置 Secret（二选一）**
 - 本地开发：复制 `.dev.vars.example` 为 `.dev.vars`，填入真实值，运行 `wrangler dev`。
@@ -101,6 +106,17 @@ wrangler deploy --keep-vars
 | GET | `/api/download?path=` | 代理下载（需登录） |
 | DELETE | `/api/file?path=&sha=` | 删除单个文件（需登录） |
 | POST | `/api/files/batch-delete` | 批量删除（需登录），`{ items:[{path,sha}] }` |
+
+### PicGo / PicList / Typora 接入
+
+上传接口同时兼容第三方客户端：
+
+- **上传地址**：`https://<你的worker域>/api/upload`
+- **表单字段**：`file`（PicGo 自定义图床里字段名填 `file`）
+- **鉴权**：请求头加 `Authorization: Bearer <你的访问口令>`（无需 Cookie）
+- **返回**：`{ "ok": true, "url": "https://raw...", "item": { ... } }`，顶层 `url` 即图片直链
+
+PicGo 自定义图床配置示例：URL 填上面地址，请求头加一行 `Authorization: Bearer 你的口令`，上传字段名 `file`，返回数据在 JSON 的 `url` 字段。
 
 ---
 

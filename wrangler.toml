@@ -18,25 +18,29 @@ target = "esm"
 
 #: ─────────────────────────────────────────────────────────────
 #: 非敏感变量：改成你自己的值
-#:   REPO        = "owner/repo"  存储用的 GitHub 仓库（已填 P4x1s/cloud-imagebed-file）
-#:   BRANCH      = "main"        存文件的分支（专用文件仓库，用 main）
-#:   DIR_PREFIX  = ""            仓库内的目录前缀（留空=根目录）；上传会再自动按年月分目录
+#:   REPO        = "owner/repo"  存储用的 GitHub 仓库（现为项目本身 P4x1s/cloud-imagebed）
+#:   BRANCH      = "main"        存文件的分支
+#:   DIR_PREFIX  = "gallery"     图床根目录（仓库内文件夹），上传会再自动按年月分目录。
+#:                               这是图床唯一写入的目录，deploy.yml 已把它排除出部署触发，
+#:                               上传图片不会触发 GitHub Actions 重新部署。
 #:   MAX_UPLOAD_MB = "50"        单文件大小上限（MB）；GitHub 建议 ≤50MB（硬上限 100MB），
 #:                               且 base64 后请求体膨胀约 1/3，50MB 是稳定可用的最大值
 #:   PUBLIC_BASE = ""            图片公开直链前缀，留空用 raw.githubusercontent.com
 #:                               也可填 jsDelivr CDN，如 https://cdn.jsdelivr.net/gh/owner/repo@main
+#:   ALLOWED_ORIGINS = ""        CORS 白名单，逗号分隔的具体域名；留空=仅同源（最严格）
 #:   ACCESS_PASSWORD 不写这里！它是 Secret，见下方说明。
 #: ─────────────────────────────────────────────────────────────
 [vars]
-# 文件与源码彻底分离：源码在 P4x1s/cloud-imagebed，上传文件在专用仓库 P4x1s/cloud-imagebed-file
-REPO = "P4x1s/cloud-imagebed-file"
+# 图床文件直接存进项目本身，根目录为 gallery/（如 gallery/2026/11/<时间戳>.png）
+REPO = "P4x1s/cloud-imagebed"
 BRANCH = "main"
-# 留空即可；上传会自动按 年/月 分目录，如 2026/11/文件名
-DIR_PREFIX = ""
+DIR_PREFIX = "gallery"
 MAX_UPLOAD_MB = "50"
 # 公开仓库可用 raw 直链预览；如需国内加速可改 jsDelivr：
-# PUBLIC_BASE = "https://cdn.jsdelivr.net/gh/P4x1s/cloud-imagebed-file@main"
+# PUBLIC_BASE = "https://cdn.jsdelivr.net/gh/P4x1s/cloud-imagebed@main/gallery"
 PUBLIC_BASE = ""
+# CORS 严格白名单；PicGo 等桌面客户端不受浏览器 CORS 限制，留空即可
+ALLOWED_ORIGINS = ""
 
 #: ─────────────────────────────────────────────────────────────
 #: Secret（不要写进本文件，用命令或 Dashboard 添加）：

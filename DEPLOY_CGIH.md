@@ -1,23 +1,28 @@
 # CloudImageBed 部署说明（P4x1s/cloud-imagebed）
 
-> ✅ **最终线上状态（2026-11-18 更新）——以下为当前真实配置，下方历史步骤仅作背景参考：**
+> ✅ **最终线上状态（2026-11-18 v2.2.0 更新）——以下为当前真实配置，下方历史步骤仅作背景参考：**
 >
 > | 项目 | 当前状态 |
 > |------|----------|
 > | 访问地址 | **`https://cloud-imagebed.cashkeven.workers.dev`**（旧 `cgih` Worker 已删除）|
-> | 源码仓库 | `P4x1s/cloud-imagebed`（仅项目文件，main 分支；原名 CGIH）|
-> | **文件存储仓库** | **`P4x1s/cloud-imagebed-file`（公开、main 分支；原名 CGIH-FILE）** |
-> | Worker 名称 | `cloud-imagebed`（REPO=`P4x1s/cloud-imagebed-file`、`BRANCH=main`）|
-> | 目录结构 | 年月优先：`<YYYY>/<MM>/<时间戳文件名>`，如 `2026/11/2026111815365012.png` |
+> | **源码仓库 = 存储仓库** | **`P4x1s/cloud-imagebed`（公开、main 分支）——图床文件直接存进项目本身** |
+> | 图床根目录 | `gallery/`（`DIR_PREFIX=gallery`），上传文件落在 `gallery/<YYYY>/<MM>/<时间戳文件名>` |
+> | Worker 名称 | `cloud-imagebed`（REPO=`P4x1s/cloud-imagebed`、`BRANCH=main`、`DIR_PREFIX=gallery`）|
+> | 防循环部署 | `deploy.yml` 已加 `paths-ignore: gallery/**`，上传图片不会触发 Actions 重新部署 |
+> | 目录结构 | 年月优先：`gallery/<YYYY>/<MM>/<时间戳文件名>`，如 `gallery/2026/11/2026111815365012.png` |
 > | 文件名规则 | 北京时间 `YYYYMMDDhhmmss` + 2 位毫秒 + 扩展名，共 16 位数字前缀，如 `2026111815365012.png` |
-> | 图片直链 | `https://raw.githubusercontent.com/P4x1s/cloud-imagebed-file/main/<YYYY>/<MM>/<时间戳文件名>` |
-> | **应用版本** | **v2.0.0**（2026-11-18）：新增粘贴/文件夹/URL 上传、格式转换、CDN 线路切换、批量删除、深浅主题；单文件上限提到 50MB |
+> | 图片直链 | `https://raw.githubusercontent.com/P4x1s/cloud-imagebed/main/gallery/<YYYY>/<MM>/<时间戳文件名>` |
+> | **应用版本** | **v2.2.0**（2026-11-18）：PicGo 兼容（Bearer 口令 + 顶层 url）、魔数校验+禁 SVG、鉴权常量时间比对、CORS 白名单、Content-Length 前置拦截、错误人话化、国内 CDN 镜像备选、Ctrl+K 搜索、Shift 范围选、图片加载失败自动降级中继；单文件上限 50MB |
+> | 旧文件仓库 | `P4x1s/cloud-imagebed-file` 已停用（原有 1 张图已迁入项目 `gallery/`）；可自行决定是否删除 |
 > | 已完成清理 | 旧 `CGIH/storage` 分支已删除（SHA `d9db408...` 可恢复）；两个仓库已重命名 |
 > | 迁移清单 | 见 `MIGRATION_MANIFEST.md`、`REPO_MIGRATION_PLAN.md` |
 >
-> 下文第 1–6 步是**最初的搭建历史记录**（当时用 CGIH 的 storage 分支存文件、Worker 名为 cgih）。
-> 现已全面升级：独立文件仓库 + 仓库改名 + Worker 改名 + 年月优先目录。
-> 那些步骤里的 `storage` 分支、`P4x1s/CGIH`、`cgih` 等**不再适用**，仅作背景参考。
+> 下文第 1–6 步是**最初的搭建历史记录**（当时用 CGIH 的 storage 分支存文件、Worker 名为 cgih、后来短暂用过独立文件仓库 cloud-imagebed-file）。
+> 现已再次升级为**源码与图床文件同仓库、gallery/ 子目录隔离**，并保留 Actions 防循环部署。
+> 那些步骤里的 `storage` 分支、`cloud-imagebed-file`、`P4x1s/CGIH`、`cgih` 等**不再适用**，仅作背景参考。
+
+> ⚠️ **取舍说明**：把图床文件并入项目仓库后，源码与图片共用同一仓库。优点是少维护一个仓库、被当"正常项目"看待；代价是若仓库被封，代码和图片会一起受影响。生产环境仍建议定期把 `gallery/` 备份到别处（本地 / 另一个仓库 / 对象存储）。
+> 已采用的防护：口令鉴权 + 上传需鉴权 + 魔数校验 + 禁 SVG + CORS 白名单 + 单文件 ≤50MB。未采用 KV 索引 / 限流 binding / OAuth / WAF，因个人自用收益低或需额外付费配置。
 
 ## 当前进度（已自动完成的部分）
 

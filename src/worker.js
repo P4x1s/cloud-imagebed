@@ -25,12 +25,13 @@
  *  GET    /api/download?path=...     代理下载（服务端带 token 访问 raw）
  *  DELETE /api/file?path=&sha=       删除单个文件
  *  POST   /api/files/batch-delete    { items:[{path,sha}] } → 批量删除
+ *  POST   /api/upload                PicGo 兼容：额外支持 Bearer 口令 + 返回顶层 url 字段
  * =============================================================
  */
 
 import uiHtml from './ui.html';
 
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 const SESSION_TTL = 7 * 24 * 3600; // 会话有效期 7 天（秒）
 const COOKIE_NAME = 'cfib_session';
 // GitHub 单文件建议上限 50MB（硬上限 100MB）；base64 后请求体膨胀约 1/3，
@@ -97,8 +98,29 @@ function parseCookies(header) {
   }
   return out;
 }
+/* 常量时间字符串比对：避免用 === 比对口令造成时序侧信道。 */
+function safeEqual(a, b) {
+  const x = utf8Encode(String(a == null ? '' : a));
+  const y = utf8Encode(String(b == null ? '' : b));
+  if (x.length !== y.length) {
+    // 长度不同也逐字节跑一遍，尽量抹平时序差异
+    let d = 1;
+    for (let i = 0; i < x.length; i++) d |= x[i] ^ 0;
+    for (let i = 0; i < y.length; i++) d |= y[i] ^ 0;
+    return false;
+  }
+  let d = 0;
+  for (let i = 0; i < x.length; i++) d |= x[i] ^ y[i];
+  return d === 0;
+}
 async function isAuthed(request, env) {
   if (!env.ACCESS_PASSWORD) return true; // 未设口令 → 公开
+  // PicGo / PicList / 脚本等无 Cookie 场景：Authorization: Bearer <访问口令>
+  const auth = request.headers.get('Authorization') || '';
+  if (/^Bearer\s+/i.test(auth)) {
+    const bearer = auth.replace(/^Bearer\s+/i, '').trim();
+    if (safeEqual(bearer, env.ACCESS_PASSWORD)) return true;
+  }
   const cookies = parseCookies(request.headers.get('Cookie') || '');
   const token = cookies[COOKIE_NAME];
   if (!token) return false;
@@ -200,6 +222,49 @@ function guessMime(name) {
   return map[ext] || 'application/octet-stream';
 }
 
+/* 文件魔数校验：只放行声明的图片类型且内容签名匹配；SVG 一律拒绝（防 XSS）。
+ * 非图片文件（文档/压缩包/音视频等）不做签名校验，仍可正常上传。 */
+function validateMagic(buf, name, declaredMime) {
+  const ext = (String(name).split('.').pop() || '').toLowerCase();
+  const sigs = {
+    png: [[0x89, 0x50, 0x4e, 0x47]],
+    jpg: [[0xff, 0xd8, 0xff]],
+    jpeg: [[0xff, 0xd8, 0xff]],
+    gif: [[0x47, 0x49, 0x46, 0x38]],
+    webp: [[0x52, 0x49, 0x46, 0x46]], // RIFF....WEBP（只验前缀，够用）
+    bmp: [[0x42, 0x4d]],
+    avif: [[0x00, 0x00, 0x00], [0x66, 0x74, 0x79, 0x70]], // ftyp box
+  };
+  if (ext === 'svg' || ext === 'svgz' || /svg/i.test(String(declaredMime))) {
+    return '出于安全考虑不支持 SVG 上传（可能含可执行脚本）';
+  }
+  const candidates = sigs[ext];
+  // 只对「扩展名是图片 且 声明为图片 MIME」做签名校验。
+  // 声明为 application/octet-stream 的（如第三方脚本/CLI）按普通文件处理，避免误伤。
+  if (!candidates || !/^image\//i.test(String(declaredMime))) return null;
+  const b = new Uint8Array(buf);
+  const ok = candidates.some((sig) => sig.every((v, i) => b[i] === v));
+  if (!ok) return `文件内容与扩展名不符（${ext.toUpperCase()} 魔数校验失败）`;
+  return null;
+}
+
+/* 把上游状态码翻译成人话，避免只甩 status code。 */
+function friendlyError(status, fallback) {
+  const map = {
+    400: '请求有误，请检查参数后重试',
+    401: '登录已失效，请重新输入访问口令',
+    403: '没有权限：GitHub Token 可能无效或缺少该仓库的写权限',
+    404: '资源不存在（仓库可能为空或路径有误）',
+    409: '文件冲突，请重试',
+    413: '文件太大，超出单文件上限',
+    422: 'GitHub 拒绝了这次写入（可能文件名冲突或内容不合法）',
+    429: '操作太频繁，已触发 GitHub 速率限制，请稍后再试',
+    500: '服务端开小差了，请稍后重试',
+    502: '存储服务暂时不可用，请稍后重试',
+  };
+  return map[status] || fallback || '操作失败，请稍后重试';
+}
+
 /* 把 ArrayBuffer 转 base64（分片避免栈溢出） */
 function abToBase64(buf) {
   const bytes = new Uint8Array(buf);
@@ -297,7 +362,17 @@ async function handleConfig(request, env) {
     repo: env.REPO || '',
     branch: env.BRANCH || 'main',
     maxRemoteMB: Math.min(Number(env.MAX_UPLOAD_MB) || DEFAULT_MAX_MB, DEFAULT_MAX_MB),
-    features: { urlUpload: true, batchDelete: true, cdnSwitch: true, convert: true, paste: true },
+    // 国内可用的 jsDelivr 镜像备选（前端线路切换用），主线路仍是 raw
+    cdnMirrors: [
+      { id: 'jsdelivr', label: 'jsDelivr', base: 'https://cdn.jsdelivr.net/gh/' },
+      { id: 'jsdmirror', label: 'jsDelivr 镜像', base: 'https://cdn.jsdmirror.cn/gh/' },
+    ],
+    picgo: {
+      enabled: true,
+      // 第三方客户端用 Bearer 口令鉴权；提示占位，不回传真实口令
+      endpoint: '/api/upload',
+    },
+    features: { urlUpload: true, batchDelete: true, cdnSwitch: true, convert: true, paste: true, picgo: true },
     configured: authEnabled(env),
     version: APP_VERSION,
   });
@@ -307,7 +382,7 @@ async function handleLogin(request, env) {
   if (!env.ACCESS_PASSWORD) return json({ ok: true }); // 未启用口令
   let body;
   try { body = await request.json(); } catch (e) { return json({ ok: false, error: '请求格式错误' }, 400); }
-  if (body.password !== env.ACCESS_PASSWORD) {
+  if (!safeEqual(body.password, env.ACCESS_PASSWORD)) {
     return json({ ok: false, error: '口令错误' }, 401);
   }
   const payload = b64uEncode(utf8Encode(JSON.stringify({
@@ -337,8 +412,7 @@ async function handleList(env) {
     return json({ ok: true, items: [], truncated: false });
   }
   if (!r.ok) {
-    const t = await r.text();
-    return json({ ok: false, error: `读取仓库失败 (${r.status}): ${t.slice(0, 200)}` }, 502);
+    return json({ ok: false, error: friendlyError(r.status, `读取仓库失败 (${r.status})`) }, 502);
   }
   const data = await r.json();
   const items = (data.tree || [])
@@ -461,13 +535,22 @@ async function handleUpload(request, env) {
   const file = form.get('file');
   if (!file || typeof file === 'string') return json({ ok: false, error: '缺少文件字段 file' }, 400);
   const limit = maxBytes(env);
+  // 前置拦截：先看请求头声明的长度，超限直接 413，避免把大 body 读进内存吃满 CPU
+  const declared = Number(request.headers.get('Content-Length') || 0);
+  if (declared > limit * 1.4) {
+    return json({ ok: false, error: `文件超过 ${Math.round(limit / 1048576)}MB 上限` }, 413);
+  }
   if (file.size > limit) {
     return json({ ok: false, error: `文件超过 ${Math.round(limit / 1048576)}MB 上限` }, 413);
   }
   const buf = await file.arrayBuffer();
-  const out = await storeFile(env, buf, file.name, file.type || guessMime(file.name), file.size);
-  if (out.error) return json({ ok: false, error: out.error }, out.status || 502);
-  return json({ ok: true, item: out.item });
+  const mime = file.type || guessMime(file.name);
+  const magicErr = validateMagic(buf, file.name, mime);
+  if (magicErr) return json({ ok: false, error: magicErr }, 415);
+  const out = await storeFile(env, buf, file.name, mime, file.size);
+  if (out.error) return json({ ok: false, error: friendlyError(out.status, out.error) }, out.status || 502);
+  // 顶层 url 字段：兼容 PicGo / PicList / Typora 等第三方客户端
+  return json({ ok: true, url: out.item.url, item: out.item });
 }
 
 /* URL 转存：服务端拉取远程文件后按普通文件存储 */
@@ -480,9 +563,12 @@ async function handleUploadUrl(request, env) {
   try {
     const { buf, type, finalUrl } = await fetchRemote(raw, maxBytes(env));
     const name = nameFromUrl(finalUrl, type);
-    const out = await storeFile(env, buf, name, type.split(';')[0] || guessMime(name), buf.byteLength);
-    if (out.error) return json({ ok: false, error: out.error }, out.status || 502);
-    return json({ ok: true, item: out.item });
+    const mime = type.split(';')[0] || guessMime(name);
+    const magicErr = validateMagic(buf, name, mime);
+    if (magicErr) return json({ ok: false, error: magicErr }, 415);
+    const out = await storeFile(env, buf, name, mime, buf.byteLength);
+    if (out.error) return json({ ok: false, error: friendlyError(out.status, out.error) }, out.status || 502);
+    return json({ ok: true, url: out.item.url, item: out.item });
   } catch (e) {
     return json({ ok: false, error: e && e.message ? e.message : String(e) }, 400);
   }
@@ -549,7 +635,7 @@ async function handleDownload(url, env) {
   const branch = env.BRANCH || 'main';
   const rawUrl = `https://raw.githubusercontent.com/${env.REPO}/${encodeURIComponent(branch)}/${path.split('/').map(encodeURIComponent).join('/')}`;
   const r = await fetch(rawUrl, { headers: { 'User-Agent': 'CloudImageBed', 'Authorization': `Bearer ${env.GITHUB_TOKEN}` } });
-  if (!r.ok) return json({ ok: false, error: `下载失败 (${r.status})` }, 502);
+  if (!r.ok) return json({ ok: false, error: friendlyError(r.status, `下载失败 (${r.status})`) }, 502);
   const name = path.split('/').pop();
   const mime = guessMime(name);
   const disposition = mime.startsWith('image/') ? 'inline' : 'attachment';
@@ -563,9 +649,45 @@ async function handleDownload(url, env) {
   });
 }
 
+/* CORS：严格白名单，默认只允许同源。绝不返回 "*"。
+ * 只有 Origin 命中 ALLOWED_ORIGINS（逗号分隔）才回显该域名。 */
+function applyCors(resp, request, env) {
+  const origin = request.headers.get('Origin');
+  if (!origin) return resp;
+  const allow = String(env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!allow.includes(origin)) return resp; // 不在白名单 → 不加头，浏览器自动拦截
+  const h = new Headers(resp.headers);
+  h.set('Access-Control-Allow-Origin', origin);
+  h.set('Vary', 'Origin');
+  h.set('Access-Control-Allow-Credentials', 'true');
+  return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: h });
+}
+
 /* ---------------- Worker 入口 ---------------- */
 export default {
   async fetch(request, env) {
+    // CORS 预检：白名单内才放行
+    if (request.method === 'OPTIONS') {
+      const origin = request.headers.get('Origin') || '';
+      const allow = String(env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (origin && allow.includes(origin)) {
+        return new Response(null, { status: 204, headers: {
+          'Access-Control-Allow-Origin': origin,
+          'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Allow-Credentials': 'true',
+          'Access-Control-Max-Age': '86400',
+          'Vary': 'Origin',
+        } });
+      }
+      return new Response(null, { status: 403 });
+    }
+    const resp = await route(request, env);
+    return applyCors(resp, request, env);
+  },
+};
+
+async function route(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -599,5 +721,4 @@ export default {
     }
 
     return json({ ok: false, error: 'Not Found' }, 404);
-  },
-};
+}

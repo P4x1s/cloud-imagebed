@@ -4,6 +4,10 @@ name: Deploy CloudImageBed to Cloudflare Workers
 on:
   push:
     branches: [main]
+    # 图床文件写入 gallery/ 目录；排除它，避免每次上传图片都触发一次 Worker 部署。
+    # 源码改动（含本 workflow、wrangler.toml）仍会正常触发部署。
+    paths-ignore:
+      - 'gallery/**'
   workflow_dispatch:
 
 concurrency:
