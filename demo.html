@@ -247,6 +247,8 @@
     .toolbar .search{flex:1 1 100%} /* 搜索框独占一行，筛选/排序/视图一行放下 */
     .toolbar{align-items:flex-start}
     .toolbar .seg{flex-wrap:wrap}
+    .opt-row .seg{flex-wrap:wrap} /* 设置行按钮组也要允许换行，否则 CDN 组撑破屏幕 */
+    .seg{max-width:100%}
     .seg button{white-space:nowrap}
     .opt-row{flex-wrap:wrap;gap:6px 10px}
     .opt-hint{display:none}
@@ -266,9 +268,9 @@
     .thumb{height:110px}
     #queue{left:12px;right:12px;width:auto;bottom:12px;max-height:55vh}
     /* 设置行改为「标签一行 + 按钮组换行」，避免 CDN 线路组撑破屏幕 */
-    .opt-row{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center}
+    .opt-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;align-items:center}
     .opt-label{width:auto}
-    .opt-row .seg{justify-self:start}
+    .opt-row .seg{justify-self:start;min-width:0;max-width:100%}
     .url-row{flex-wrap:wrap}
     .url-row .btn{flex:1}
     /* iOS 聚焦输入框自动放大问题：小屏输入字号提到 16px */
@@ -286,9 +288,11 @@
     .lb-prev{left:8px}
     .lb-next{right:8px}
   }
-  /* 触屏设备（手机 / iPad）：没有 hover，卡片操作按钮常显 */
+  /* 触屏设备（手机 / iPad）：没有 hover，卡片操作按钮常显并加大触摸目标 */
   @media(hover:none){
     .card-actions{opacity:1}
+    .card-actions button{width:32px;height:32px}
+    .card-actions button svg{width:16px;height:16px}
     .file-card:hover{transform:none}
   }
   /* 小屏手机：header 允许换行，API 按钮收成纯图标 */
@@ -532,10 +536,27 @@ Content-Type: application/json
     $('toasts').appendChild(el);
     setTimeout(function(){el.style.opacity='0';el.style.transition='opacity .3s';setTimeout(function(){el.remove();},300);},2800);
   }
+  /* 复制文本：Clipboard API 失败（权限/WebView/页面失焦）时自动降级
+     execCommand 兜底；iOS 需要 setSelectionRange 才能真正选中 textarea 内容 */
   function copyText(t){
-    if(navigator.clipboard&&navigator.clipboard.writeText){return navigator.clipboard.writeText(t);}
-    var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();
-    try{document.execCommand('copy');}catch(e){}ta.remove();return Promise.resolve();
+    function legacy(){
+      var ta=document.createElement('textarea');
+      ta.value=t;ta.setAttribute('readonly','');
+      ta.style.cssText='position:fixed;top:-999px;left:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.focus();ta.select();
+      if(ta.setSelectionRange)ta.setSelectionRange(0,t.length);
+      var ok=false;
+      try{ok=document.execCommand('copy');}catch(e){}
+      ta.blur();ta.remove();
+      return ok?Promise.resolve():Promise.reject(new Error('copy-failed'));
+    }
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      try{
+        return navigator.clipboard.writeText(t).catch(function(){return legacy();});
+      }catch(e){return legacy();}
+    }
+    return legacy();
   }
   /* HTTP 状态码翻译成人话，不再只甩数字 */
   function errMsg(status,raw){
@@ -1254,11 +1275,26 @@ Content-Type: application/json
     $('btnBatchDelete').disabled=n===0;
     $('btnSelectAll').textContent=(n===state.items.length&&n>0)?'取消全选':'全选';
   }
+  /* 下载：跨域直链上 a.download 属性会被浏览器忽略（且无 target 会把当前页跳走），
+     所以优先 fetch 转 blob 触发真实下载；CORS 不允许时兜底新标签打开 */
   function download(it){
-    var a=document.createElement('a');
-    a.href=itemUrl(it);
-    a.download=it.name||'download';
-    document.body.appendChild(a);a.click();a.remove();
+    var u=itemUrl(it);
+    var name=it.name||'download';
+    function fallback(){
+      var a=document.createElement('a');
+      a.href=u;a.target='_blank';a.rel='noopener';a.download=name;
+      document.body.appendChild(a);a.click();a.remove();
+    }
+    if(!u||!/^https?:/i.test(u)){fallback();return;}
+    fetch(u,{mode:'cors'}).then(function(r){
+      if(!r.ok)throw new Error('http '+r.status);
+      return r.blob();
+    }).then(function(b){
+      var a=document.createElement('a');
+      a.href=URL.createObjectURL(b);a.download=name;
+      document.body.appendChild(a);a.click();a.remove();
+      setTimeout(function(){URL.revokeObjectURL(a.href);},4000);
+    }).catch(fallback);
   }
   function removeItems(items){
     if(!items||!items.length)return;
@@ -1580,7 +1616,9 @@ Content-Type: application/json
     $('lbNext').addEventListener('click',function(){lbMove(1);});
     $('lightbox').addEventListener('click',function(e){if(e.target===this)this.classList.add('hidden');});
     $('lbCopy').addEventListener('click',function(){
-      var list=filtered(),it=list[state.lbIndex];if(it)copyText(itemUrl(it)).then(function(){toast('链接已复制','ok');});
+      var list=filtered(),it=list[state.lbIndex];if(!it)return;
+      copyText(itemUrl(it)).then(function(){toast('链接已复制','ok');})
+        .catch(function(){toast('复制失败，请长按链接手动复制','err');});
     });
     $('lbDownload').addEventListener('click',function(){
       var list=filtered(),it=list[state.lbIndex];if(it)download(it);
@@ -1601,12 +1639,14 @@ Content-Type: application/json
       var ids=['lnkDirect','lnkHtml','lnkBb','lnkMd','lnkMdLink'];
       var labels=['URL','HTML','BBCode','Markdown','MD 带链接'];
       var text=ids.map(function(id,i){return labels[i]+':\n'+$(id).value;}).join('\n\n');
-      copyText(text).then(function(){toast('已复制全部 5 种格式','ok');});
+      copyText(text).then(function(){toast('已复制全部 5 种格式','ok');})
+        .catch(function(){toast('复制失败，请长按输入框手动复制','err');});
     });
     Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'),function(b){
       b.addEventListener('click',function(){
         var el=$(b.getAttribute('data-copy'));
-        copyText(el.value).then(function(){toast('已复制','ok');});
+        copyText(el.value).then(function(){toast('已复制','ok');})
+          .catch(function(){toast('复制失败，请长按输入框手动复制','err');});
       });
     });
   }
