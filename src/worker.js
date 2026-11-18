@@ -30,7 +30,7 @@
 
 import uiHtml from './ui.html';
 
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.1';
 const SESSION_TTL = 7 * 24 * 3600; // 会话有效期 7 天（秒）
 const COOKIE_NAME = 'cfib_session';
 // GitHub 单文件建议上限 50MB（硬上限 100MB）；base64 后请求体膨胀约 1/3，
@@ -332,6 +332,10 @@ async function handleList(env) {
   const r = await fetch(`${apiBase(env)}/git/trees/${encodeURIComponent(branch)}?recursive=1`, {
     headers: ghHeaders(env),
   });
+  if (r.status === 404) {
+    // 空仓库（还没有任何提交）没有 tree，属于正常状态：视为暂无文件
+    return json({ ok: true, items: [], truncated: false });
+  }
   if (!r.ok) {
     const t = await r.text();
     return json({ ok: false, error: `读取仓库失败 (${r.status}): ${t.slice(0, 200)}` }, 502);
