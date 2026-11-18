@@ -140,7 +140,7 @@ function withUrls(env, item) {
   return item;
 }
 
-/* 路径工具：统一放到 DIR_PREFIX/YYYY/MM/ 下，文件名做安全清洗 */
+/* 路径工具：统一放到 [DIR_PREFIX/]YYYY/MM/ 下（年月优先），文件名做安全清洗 */
 function safeName(name) {
   return String(name || 'file')
     .replace(/[\\/:*?"<>|\r\n]/g, '_')
@@ -265,7 +265,7 @@ async function handleUpload(request, env) {
   }
 
   const now = Date.now();
-  // internal: 用闭包变量传递 prefix，避免污染全局
+  // internal: DIR_PREFIX 为可选手动前缀；主结构按年月 YYYY/MM 归档（年月优先）
   const prefix = (env.DIR_PREFIX || '').replace(/^\/+|\/+$/g, '');
   const rand = Math.random().toString(36).slice(2, 10);
   const base = `${now}-${rand}-${safeName(file.name)}`;
