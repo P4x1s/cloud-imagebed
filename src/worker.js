@@ -140,12 +140,44 @@ function withUrls(env, item) {
   return item;
 }
 
-/* 路径工具：统一放到 [DIR_PREFIX/]YYYY/MM/ 下（年月优先），文件名做安全清洗 */
+/* 路径工具：统一放到 [DIR_PREFIX/]YYYY/MM/ 下（年月优先） */
 function safeName(name) {
   return String(name || 'file')
     .replace(/[\\/:*?"<>|\r\n]/g, '_')
     .replace(/^\.+/, '')
     .slice(0, 180) || 'file';
+}
+
+/* 北京时间(UTC+8)的 YYYYMMDDhhmmss + 2 位毫秒，如 2026111815365012。
+ * Workers 运行在 UTC，用 getUTC* + 8h 偏移得到北京字段，避免依赖运行环境时区。 */
+function stampTime(now) {
+  const d = new Date(now + 8 * 3600 * 1000);
+  const p = (n, len = 2) => String(n).padStart(len, '0');
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}` +
+    `${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}` +
+    `${p(Math.floor(d.getUTCMilliseconds() / 10))}`; // 毫秒取前 2 位（百分秒）
+}
+
+/* 生成时间戳文件名：YYYYMMDDhhmmssNN + 原扩展名，如 2026111815365012.png */
+function stampName(name, now) {
+  const ext = (String(name).split('.').pop() || '').toLowerCase();
+  const suffix = /^[a-z0-9]{1,10}$/.test(ext) && String(name).includes('.') ? '.' + ext : '';
+  return stampTime(now) + suffix;
+}
+
+/* 从文件名还原上传时间与显示名（兼容新旧两种格式）
+ * 新格式：2026111815365012.png（北京时间）→ 显示名即时间戳名，时间反推为 UTC 毫秒
+ * 旧格式：<13位UTC毫秒>-<随机串>-<原名> → 显示名还原原名，时间为该毫秒 */
+function parseStamp(name) {
+  const m = name.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\.[a-z0-9]{1,10})?$/);
+  if (m) {
+    // m[1..7] = 年 月 日 时 分 秒 毫秒(2位)；按北京时间反推 UTC 时间戳
+    const ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 8, +m[5], +m[6], +m[7] * 10);
+    return { name, uploadedAt: ms };
+  }
+  const old = name.match(/^(\d{13})-[a-z0-9]{6,10}-(.+)$/);
+  if (old) return { name: old[2], uploadedAt: Number(old[1]) };
+  return { name, uploadedAt: Date.now() };
 }
 
 function guessMime(name) {
@@ -232,18 +264,15 @@ async function handleList(env) {
     .filter((n) => /\.[a-z0-9]{1,8}$/i.test(n.path))
     .map((n) => {
       const name = n.path.split('/').pop();
-      // 文件名格式为 <时间戳>-<随机串>-<原名>，还原上传时间与显示名
-      const m = name.match(/^(\d{13})-[a-z0-9]{6,10}-(.+)$/);
-      const ts = name.match(/^(\d{13})-/);
-      const uploadedAt = ts ? Number(ts[1]) : Date.now();
-      const displayName = m ? m[2] : name;
+      // 文件名现为 YYYYMMDDhhmmssNN.ext（北京时间），兼容旧格式
+      const parsed = parseStamp(name);
       return withUrls(env, {
-        name: displayName,
+        name: parsed.name,
         path: n.path,
         size: n.size,
         sha: n.sha,
         type: guessMime(name),
-        uploadedAt,
+        uploadedAt: parsed.uploadedAt,
       });
     })
     .sort((a, b) => b.name.localeCompare(a.name));
@@ -265,12 +294,13 @@ async function handleUpload(request, env) {
   }
 
   const now = Date.now();
-  // internal: DIR_PREFIX 为可选手动前缀；主结构按年月 YYYY/MM 归档（年月优先）
+  // internal: DIR_PREFIX 为可选手动前缀；主结构按北京时间年月 YYYY/MM 归档（年月优先）
+  // 文件名统一为 时间戳 YYYYMMDDhhmmssNN.ext（北京时间），如 2026111815365012.png
   const prefix = (env.DIR_PREFIX || '').replace(/^\/+|\/+$/g, '');
-  const rand = Math.random().toString(36).slice(2, 10);
-  const base = `${now}-${rand}-${safeName(file.name)}`;
-  const path = [prefix, new Date(now).getUTCFullYear(),
-    String(new Date(now).getUTCMonth() + 1).padStart(2, '0'), base].filter(Boolean).join('/');
+  const bj = new Date(now + 8 * 3600 * 1000);
+  const base = stampName(file.name, now);
+  const path = [prefix, bj.getUTCFullYear(),
+    String(bj.getUTCMonth() + 1).padStart(2, '0'), base].filter(Boolean).join('/');
 
   const buf = await file.arrayBuffer();
   const branch = env.BRANCH || 'main';
