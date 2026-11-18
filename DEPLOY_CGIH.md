@@ -11,6 +11,7 @@
 > | 目录结构 | 年月优先：`<YYYY>/<MM>/<时间戳文件名>`，如 `2026/11/2026111815365012.png` |
 > | 文件名规则 | 北京时间 `YYYYMMDDhhmmss` + 2 位毫秒 + 扩展名，共 16 位数字前缀，如 `2026111815365012.png` |
 > | 图片直链 | `https://raw.githubusercontent.com/P4x1s/cloud-imagebed-file/main/<YYYY>/<MM>/<时间戳文件名>` |
+> | **应用版本** | **v2.0.0**（2026-11-18）：新增粘贴/文件夹/URL 上传、格式转换、CDN 线路切换、批量删除、深浅主题；单文件上限提到 50MB |
 > | 已完成清理 | 旧 `CGIH/storage` 分支已删除（SHA `d9db408...` 可恢复）；两个仓库已重命名 |
 > | 迁移清单 | 见 `MIGRATION_MANIFEST.md`、`REPO_MIGRATION_PLAN.md` |
 >

@@ -14,14 +14,17 @@
 
 > 用途：先确认界面和交互是否符合你的预期，再决定是否部署线上版。
 
-已实现的功能：
-- 拖拽 / 点击 / 多选上传，带进度队列
-- 图片即时缩略图预览 + 大图灯箱（支持 ← → 切换、Esc 关闭）
-- 视频 / PDF / 任意格式文件的图标占位
-- 一键复制「直链 / Markdown / HTML」三种格式
-- 下载（图片内联预览，其他文件强制下载）
-- 按文件名搜索、图片/文件筛选、网格/列表视图切换
-- 暗色主题，适配桌面与手机
+已实现的功能（v2）：
+- **多种上传方式**：拖拽、点击选择、`Ctrl/⌘ + V` 剪贴板粘贴、选择整个文件夹、URL 一键转存
+- **并发上传队列**：可选 1/3/5/10 并发，实时进度
+- **上传前格式转换**：浏览器本地 Canvas 把图片转为 WebP / JPEG / PNG（GIF 等动图保持原样）
+- **CDN 线路切换**：默认 raw / jsDelivr 加速 / Worker 中继（自定义 `PUBLIC_BASE` 时多一项）
+- **图片即时缩略图预览 + 大图灯箱**（← → 切换、Esc 关闭）
+- **一键复制 4 种格式**：直链 / Markdown / HTML / BBCode
+- **批量管理**：多选文件后批量删除（部分失败会逐项报告）
+- 按文件名/扩展名搜索、图片/视频/文件筛选、4 种排序、网格/列表视图
+- 深浅双主题切换，适配桌面与手机
+- 内置开放 API 文档面板
 
 ---
 
@@ -55,7 +58,7 @@
 | `REPO` | 存储仓库 | `zhangsan/my-imagebed` |
 | `BRANCH` | 分支 | `main` |
 | `DIR_PREFIX` | 仓库内目录前缀 | `images`（留空=根目录） |
-| `MAX_UPLOAD_MB` | 单文件上限 | `25` |
+| `MAX_UPLOAD_MB` | 单文件上限（GitHub 建议 ≤50MB，硬上限 100MB；base64 膨胀约 1/3） | `50` |
 | `PUBLIC_BASE` | 图片直链前缀 | 留空用 raw；或 `https://cdn.jsdelivr.net/gh/zhangsan/my-imagebed@main` |
 
 **3. 设置 Secret（二选一）**
@@ -94,8 +97,10 @@ wrangler deploy --keep-vars
 | POST | `/api/logout` | 登出 |
 | GET | `/api/list` | 列出文件（需登录） |
 | POST | `/api/upload` | 上传（需登录），multipart 字段 `file` |
+| POST | `/api/upload-url` | URL 转存（需登录），`{ url }`，含 SSRF 防护 |
 | GET | `/api/download?path=` | 代理下载（需登录） |
-| DELETE | `/api/file?path=&sha=` | 删除（需登录） |
+| DELETE | `/api/file?path=&sha=` | 删除单个文件（需登录） |
+| POST | `/api/files/batch-delete` | 批量删除（需登录），`{ items:[{path,sha}] }` |
 
 ---
 
@@ -126,9 +131,9 @@ node tests/worker.test.mjs   # 验证鉴权/上传/列出/下载/删除全链路
 
 ## 五、后续可迭代方向（待你的体验反馈）
 
-- 上传前图片压缩 / 生成缩略图（省 GitHub 空间）
+- 生成缩略图 / 按目录分组浏览（省 GitHub 空间、便于管理）
 - 自定义短链 / 随机文件名映射
-- 批量删除、文件夹管理
-- 上传白名单（限制文件类型 / MIME）
+- 上传白名单（限制文件类型 / MIME）与去重
 - 访问口令多次输错限速（配合 Turnstile 人机验证）
 - 图床外链防盗链、水印
+- 过期文件自动清理（GitHub 存储需配合定时任务）
