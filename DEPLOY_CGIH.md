@@ -1,6 +1,6 @@
 # CloudImageBed 部署说明（P4x1s/cloud-imagebed）
 
-> ✅ **最终线上状态（2026-11-18 v2.3.0 更新）——以下为当前真实配置，下方历史步骤仅作背景参考：**
+> ✅ **最终线上状态（2026-11-18 v2.4.0 更新）——以下为当前真实配置，下方历史步骤仅作背景参考：**
 >
 > | 项目 | 当前状态 |
 > |------|----------|
@@ -12,7 +12,7 @@
 > | 目录结构 | 年月优先：`gallery/<YYYY>/<MM>/<时间戳文件名>`，如 `gallery/2026/11/2026111815365012.png` |
 > | 文件名规则 | 北京时间 `YYYYMMDDhhmmss` + 2 位毫秒 + 扩展名，共 16 位数字前缀，如 `2026111815365012.png` |
 > | 图片直链 | `https://raw.githubusercontent.com/P4x1s/cloud-imagebed/main/gallery/<YYYY>/<MM>/<时间戳文件名>` |
-> | **应用版本** | **v2.3.0**（2026-11-18）：静态图片(png/jpg/jpeg…)转 WebP 视觉无损压缩；GIF 动图走二进制 LZW 重编码无损压缩（保留格式/帧数/延时/循环/透明色，动画不丢）；登录页接入 Cloudflare Turnstile 人机验证（站点密钥 `0x4AAAAAAGHCDGptGjnrqwmc` 公开下发，密钥走 Worker Secret `TURNSTILE_SECRET_KEY`，未配置则自动跳过）。v2.2.2：去掉「输出格式」栏、文件库默认只显示 WebP、统计胶囊化、队列缩略图、Markdown 带链接 + 复制全部、修复筛选排序视图不重渲染。v2.2.0：PicGo 兼容、魔数校验+禁 SVG、CORS 白名单、错误人话化、CDN 镜像备选；单文件上限 50MB |
+> | **应用版本** | **v2.4.0**（2026-11-18）：全部图片只保留 WebP——PNG/WebP/BMP/GIF 走 WASM(libwebp) 真无损编码、JPEG 源 0.95 高质量转码、不再保留原图；GIF 动图自研解析器逐帧解码→VP8L 无损编码→组装动图 WebP（动画/时序/循环完整保留），编码器多 CDN 加载失败自动降级。v2.3.0：登录 Turnstile 人机验证（站点密钥公开、Secret 走 Dashboard）+ GIF 无损压缩。v2.2.x：默认 WebP 筛选、PicGo 兼容、魔数校验+禁 SVG、CORS 白名单；单文件上限 50MB |
 > | Turnstile 密钥 | Cloudflare Worker Secret `TURNSTILE_SECRET_KEY`（只放 Dashboard，不进仓库）；站点密钥 `0x4AAAAAAGHCDGptGjnrqwmc` 公开内置于代码，无需手动配置 |
 > | 旧文件仓库 | `P4x1s/cloud-imagebed-file` 已停用（原有 1 张图已迁入项目 `gallery/`）；可自行决定是否删除 |
 > | 已完成清理 | 旧 `CGIH/storage` 分支已删除（SHA `d9db408...` 可恢复）；两个仓库已重命名 |

@@ -346,7 +346,7 @@
         <input type="text" id="searchInput" placeholder="搜索文件名、扩展名… (Ctrl+K)">
       </div>
       <div class="seg" id="filterSeg">
-        <button data-filter="webp" class="active" title="只显示 WebP，隐藏保留的原图">WebP</button>
+        <button data-filter="webp" class="active" title="只显示 WebP">WebP</button>
         <button data-filter="all">全部</button>
         <button data-filter="image">图片</button>
         <button data-filter="video">视频</button>
@@ -618,30 +618,28 @@ Content-Type: application/json
   };
   var API = IS_DEMO ? DemoAPI : WorkerAPI;
 
-  /* ---------------- GIF 无损压缩（保留格式与动画） ----------------
-     直接操作 GIF 二进制：去掉注释/非循环类元数据扩展 + LZW 字典重编码。
-     像素索引、帧数、延时、处置方式、透明色、循环全部原样保留 → 真正无损。
-     任一步解析失败就回退原文件，绝不产出损坏的 GIF。 */
+  /* ---------------- 图片 → WebP 转换管线（v2.4.0） ----------------
+     智能模式：PNG/GIF/静态图走 WASM 真无损（jsquash/libwebp）；JPEG 源用 0.95 高质量
+     有损转码（源本身已有损，无损重编码只会放大体积）。GIF 动图自研解析器逐帧
+     解码 → VP8L 无损编码 → 组装动图 WebP 容器，动画/时序/循环完整保留。
+     只保留 WebP，不再保留原图。WASM 多 CDN 加载，失败时降级：
+     动图 → 保留原 GIF；静态图 → 浏览器 Canvas WebP 0.95（视觉无损）。 */
   function concatBytes(parts){
     var len=0,i;for(i=0;i<parts.length;i++)len+=parts[i].length;
     var out=new Uint8Array(len),o=0;
     for(i=0;i<parts.length;i++){out.set(parts[i],o);o+=parts[i].length;}
     return out;
   }
-  function readSubBlocks(bytes,pos){
-    var parts=[],p=pos;
-    while(p<bytes.length){
-      var n=bytes[p++];
-      if(n===0)return {end:p,data:concatBytes(parts)};
-      if(p+n>bytes.length)throw new Error('bad sub-block');
-      parts.push(bytes.subarray(p,p+n));p+=n;
-    }
-    throw new Error('unterminated sub-block');
-  }
-  function makeSubBlocks(data){
-    var parts=[],i=0;
-    while(i<data.length){var n=Math.min(255,data.length-i);parts.push(new Uint8Array([n]),data.subarray(i,i+n));i+=n;}
-    parts.push(new Uint8Array([0]));
+  function u16be(b,p){return b[p]|(b[p+1]<<8);}
+  function u24le(b,p){return b[p]|(b[p+1]<<8)|(b[p+2]<<16);}
+  function u24v(v){return new Uint8Array([v&255,(v>>8)&255,(v>>16)&255]);}
+  function u32v(v){return new Uint8Array([v&255,(v>>8)&255,(v>>16)&255,(v>>>24)&255]);}
+  function wpChunk(id,payload){
+    var head=new Uint8Array(8),i;
+    for(i=0;i<4;i++)head[i]=id.charCodeAt(i);
+    head[4]=payload.length&255;head[5]=(payload.length>>8)&255;head[6]=(payload.length>>16)&255;head[7]=(payload.length>>24)&255;
+    var parts=[head,payload];
+    if(payload.length&1)parts.push(new Uint8Array([0]));
     return concatBytes(parts);
   }
   function gifLzwDecode(minCodeSize,data){
@@ -675,134 +673,321 @@ Content-Type: application/json
     }
     return out;
   }
-  function gifLzwEncode(minCodeSize,indices){
-    var clear=1<<minCodeSize,eoi=clear+1;
-    var dict=new Map(),codeSize=minCodeSize+1,next=eoi+1;
-    var bytes=[],acc=0,nbits=0;
-    function emit(code){
-      acc|=code<<nbits;nbits+=codeSize;
-      while(nbits>=8){bytes.push(acc&0xff);acc>>>=8;nbits-=8;}
-    }
-    function reset(){dict=new Map();codeSize=minCodeSize+1;next=eoi+1;}
-    emit(clear);
-    if(!indices.length){emit(eoi);if(nbits>0)bytes.push(acc&0xff);return Uint8Array.from(bytes);}
-    var prefix=''+indices[0];
-    for(var i=1;i<indices.length;i++){
-      var k=indices[i],combined=prefix+','+k;
-      if(dict.has(combined)){prefix=combined;continue;}
-      emit(dict.has(prefix)?dict.get(prefix):(+prefix));
-      if(next<4096){
-        dict.set(combined,next++);
-        if(next===(1<<codeSize)&&codeSize<12)codeSize++;
-      }else{emit(clear);reset();}
-      prefix=''+k;
-    }
-    emit(dict.has(prefix)?dict.get(prefix):(+prefix));
-    emit(eoi);
-    if(nbits>0)bytes.push(acc&0xff);
-    return Uint8Array.from(bytes);
-  }
-  function optimizeGifBytes(buf){
-    var b=new Uint8Array(buf);
+  /* ---------- GIF 解析（帧索引+调色板，RGBA 按需展开控制内存） ---------- */
+  function parseGif(b){
     if(b.length<13)throw new Error('too small');
     var sig=String.fromCharCode(b[0],b[1],b[2],b[3],b[4],b[5]);
     if(sig!=='GIF89a'&&sig!=='GIF87a')throw new Error('not gif');
-    var out=[];
-    out.push(b.subarray(0,13)); // 头 6 + 逻辑屏幕描述符 7
-    var packed=b[10],p=13;
-    if(packed&0x80){
-      var gctSize=3*(1<<((packed&7)+1));
-      if(p+gctSize>b.length)throw new Error('bad gct');
-      out.push(b.subarray(p,p+gctSize));p+=gctSize;
-    }
-    var sawTrailer=false;
+    var width=u16be(b,6),height=u16be(b,8);
+    var gPacked=b[10],p=13,gct=null;
+    if(gPacked&0x80){var gn=3*(1<<((gPacked&7)+1));if(p+gn>b.length)throw new Error('bad gct');gct=b.subarray(p,p+gn);p+=gn;}
+    var frames=[],gce=null,loop=0;
     while(p<b.length){
-      var marker=b[p++];
-      if(marker===0x3B){out.push(b.subarray(p-1,p));sawTrailer=true;break;}
-      if(marker===0x21){
-        var start=p-1,label=b[p++];
+      var m=b[p++];
+      if(m===0x3B)break;
+      if(m===0x21){
+        var label=b[p++];
         if(label===0xF9){
-          if(b[p]!==0x04||p+6>b.length)throw new Error('bad gce');
-          p+=6;out.push(b.subarray(start,p));
-        }else if(label===0xFE){ // 注释扩展：无损剥离
-          p=readSubBlocks(b,p).end;
-        }else if(label===0xFF){ // 应用扩展：仅保留循环控制
-          var size=b[p++];
-          if(p+size>b.length)throw new Error('bad appext');
-          var id='';for(var z=0;z<size;z++)id+=String.fromCharCode(b[p+z]);
-          p+=size;p=readSubBlocks(b,p).end;
-          if(/^(NETSCAPE2\.0|ANIMEXTS1\.0)$/i.test(id))out.push(b.subarray(start,p));
-        }else if(label===0x01){ // 纯文本扩展
-          var sz=b[p++];p+=sz;p=readSubBlocks(b,p).end;out.push(b.subarray(start,p));
+          if(p+5>b.length)throw new Error('bad gce');
+          var szB=b[p++];
+          var packed=b[p];
+          gce={disposal:(packed>>2)&7,transparent:(packed&1)?b[p+3]:-1,delay:u16be(b,p+1)};
+          p+=szB+1; // 数据+块终结符
+        }else if(label===0xFF){
+          var sz=b[p++];
+          if(p+sz>b.length)throw new Error('bad appext');
+          var name='';for(var z=0;z<sz;z++)name+=String.fromCharCode(b[p+z]);
+          p+=sz;
+          var sub=[];
+          while(p<b.length&&b[p]!==0){var sN=b[p++];sub.push(b.subarray(p,p+sN));p+=sN;}
+          p++;
+          if(name==='NETSCAPE2.0'&&sub.length){
+            var d=concatBytes(sub);
+            if(d.length>=3&&d[0]===1)loop=u16be(d,1);
+          }
         }else{
-          p=readSubBlocks(b,p).end;out.push(b.subarray(start,p));
+          while(p<b.length&&b[p]!==0){p+=1+b[p];}
+          p++;
         }
         continue;
       }
-      if(marker===0x2C){
-        var imgStart=p-1;
+      if(m===0x2C){
         if(p+9>b.length)throw new Error('bad imgdesc');
+        var x=u16be(b,p),y=u16be(b,p+2),w=u16be(b,p+4),h=u16be(b,p+6);
         var ipacked=b[p+8];p+=9;
-        if(ipacked&0x80){
-          var lct=3*(1<<((ipacked&7)+1));
-          if(p+lct>b.length)throw new Error('bad lct');
-          p+=lct;
-        }
+        var lct=null;
+        if(ipacked&0x80){var ln=3*(1<<((ipacked&7)+1));if(p+ln>b.length)throw new Error('bad lct');lct=b.subarray(p,p+ln);p+=ln;}
+        var interlace=!!(ipacked&0x40);
         var minCode=b[p++];
-        var dataStart=p;
-        var sb=readSubBlocks(b,p);p=sb.end;
         if(minCode<2||minCode>8)throw new Error('bad mincode');
-        var indices=gifLzwDecode(minCode,sb.data);
-        var recoded=gifLzwEncode(minCode,indices);
-        var check=gifLzwDecode(minCode,recoded); // 自校验：字节级一致才采用
-        if(check.length!==indices.length)throw new Error('verify len');
-        for(var q=0;q<indices.length;q++){if(check[q]!==indices[q])throw new Error('verify byte');}
-        out.push(b.subarray(imgStart,dataStart));
-        out.push(makeSubBlocks(recoded.length<sb.data.length?recoded:sb.data));
+        var dataParts=[];
+        while(p<b.length&&b[p]!==0){var dN=b[p++];dataParts.push(b.subarray(p,p+dN));p+=dN;}
+        p++;
+        var idx=gifLzwDecode(minCode,concatBytes(dataParts));
+        if(idx.length<w*h)throw new Error('frame index short');
+        frames.push({x:x,y:y,w:w,h:h,delay:gce?gce.delay:0,disposal:gce?gce.disposal:0,
+          transparent:gce?gce.transparent:-1,pal:lct||gct,interlace:interlace,indices:idx});
+        gce=null;
         continue;
       }
-      throw new Error('unknown marker');
+      throw new Error('unknown marker 0x'+m.toString(16));
     }
-    if(!sawTrailer)throw new Error('no trailer');
-    return concatBytes(out);
+    if(!frames.length)throw new Error('no frames');
+    return {width:width,height:height,loop:loop,frames:frames};
+  }
+  /* GIF 交织行序还原 */
+  function deinterlace(rgba,w,h){
+    var rw=w*4,out=new Uint8Array(rgba.length),src=0,passes=[[0,8],[4,8],[2,4],[1,2]],i,j;
+    for(i=0;i<passes.length;i++){
+      for(j=passes[i][0];j<h;j+=passes[i][1]){out.set(rgba.subarray(src*rw,(src+1)*rw),j*rw);src++;}
+    }
+    return out;
+  }
+  /* 帧索引 → RGBA（透明索引 alpha=0） */
+  function frameRgba(f){
+    var rgba=new Uint8Array(f.w*f.h*4),idx=f.indices,pal=f.pal,i;
+    if(!pal)throw new Error('no palette');
+    for(i=0;i<f.w*f.h;i++){
+      var ci=idx[i],o=i*4;
+      if(ci===f.transparent){rgba[o+3]=0;}
+      else{var q=ci*3;rgba[o]=pal[q];rgba[o+1]=pal[q+1];rgba[o+2]=pal[q+2];rgba[o+3]=255;}
+    }
+    return f.interlace?deinterlace(rgba,f.w,f.h):rgba;
+  }
+  /* GIF 帧时延(cs)→毫秒；浏览器惯例 delay<2cs 按 100ms 播放 */
+  function gifDelayMs(cs){return cs<=1?100:cs*10;}
+  /* 帧矩形偶数对齐扩展（WebP ANMF 要求 X/Y 为偶数），多余区域透明 */
+  function evenPadRgba(rgba,f){
+    var x0=f.x&~1,y0=f.y&~1;
+    var x1=f.x+f.w+((f.x+f.w-x0)&1),y1=f.y+f.h+((f.y+f.h-y0)&1);
+    var nw=x1-x0,nh=y1-y0,out=new Uint8Array(nw*nh*4),yy;
+    for(yy=0;yy<f.h;yy++){
+      out.set(rgba.subarray(yy*f.w*4,(yy+1)*f.w*4),((yy+f.y-y0)*nw+(f.x-x0))*4);
+    }
+    return {x:x0,y:y0,w:nw,h:nh,rgba:out};
+  }
+  /* 二值 alpha 覆盖绘制（透明像素保留底层） */
+  function drawRect(canvas,cw,rgba,f){
+    for(var yy=0;yy<f.h;yy++){
+      for(var xx=0;xx<f.w;xx++){
+        var si=(yy*f.w+xx)*4;
+        if(rgba[si+3]===0)continue;
+        var dx=f.x+xx,dy=f.y+yy;
+        if(dx<0||dy<0||dx>=cw)continue;
+        var di=(dy*cw+dx)*4;
+        canvas[di]=rgba[si];canvas[di+1]=rgba[si+1];canvas[di+2]=rgba[si+2];canvas[di+3]=255;
+      }
+    }
+  }
+  /* 从无损 WebP 提取 VP8L 位流 */
+  function extractVp8l(webp){
+    if(String.fromCharCode(webp[0],webp[1],webp[2],webp[3])!=='RIFF')throw new Error('not RIFF');
+    var p=12;
+    while(p+8<=webp.length){
+      var id=String.fromCharCode(webp[p],webp[p+1],webp[p+2],webp[p+3]);
+      var sz=webp[p+4]|(webp[p+5]<<8)|(webp[p+6]<<16)|(webp[p+7]<<24);
+      if(id==='VP8L')return webp.slice(p+8,p+8+sz);
+      p+=8+sz+(sz&1);
+    }
+    throw new Error('no VP8L');
+  }
+  /* 组装动图 WebP：VP8X + ANIM + ANMF*（帧数据=VP8L 子块）
+     ANMF flags：bit0=disposal(1=清背景)，bit1=blending(1=整块覆盖)
+     —— 经 libwebp 实测校准（与部分文档摘要相反） */
+  function assembleAnimatedWebp(o){
+    var vp8x=wpChunk('VP8X',concatBytes([new Uint8Array([0x12]),u24v(0),u24v(o.width-1),u24v(o.height-1)]));
+    var anim=wpChunk('ANIM',concatBytes([new Uint8Array([0,0,0,0]),new Uint8Array([o.loop&255,(o.loop>>8)&255])]));
+    var anmfs=[],i;
+    for(i=0;i<o.frames.length;i++){
+      var f=o.frames[i];
+      anmfs.push(wpChunk('ANMF',concatBytes([
+        u24v(f.x/2),u24v(f.y/2),u24v(f.w-1),u24v(f.h-1),u24v(f.delayMs),
+        new Uint8Array([(f.dispose&1)|((f.blend&1)<<1)]),
+        wpChunk('VP8L',f.payload),
+      ])));
+    }
+    var body=concatBytes([vp8x,anim].concat(anmfs));
+    return concatBytes([new Uint8Array([82,73,70,70]),u32v(4+body.length),new Uint8Array([87,69,66,80]),body]);
   }
 
-  /* 上传前图片处理：
-     - 静态图片(png/jpg/jpeg/bmp/webp…) → Canvas 转 WebP（视觉无损，保留原分辨率），保留原图两份都存
-     - GIF 动图 → 上面的 LZW 无损压缩，保留 gif 格式与动画，单文件
-     返回 {main, original, before, after, kind}。 */
-  function processImage(file,targetType){
+  /* ---------- WASM 无损 WebP 编码器（jsquash/libwebp，多 CDN 降级） ---------- */
+  var WEBP_ENC_CDNS=[
+    'https://cdn.jsdelivr.net/npm/@jsquash/webp@1.5.0/codec/enc/',
+    'https://fastly.jsdelivr.net/npm/@jsquash/webp@1.5.0/codec/enc/',
+    'https://cdn.jsdmirror.com/npm/@jsquash/webp@1.5.0/codec/enc/',
+    'https://gcore.jsdelivr.net/npm/@jsquash/webp@1.5.0/codec/enc/'
+  ];
+  /* WebPConfig 全字段（wasm 绑定要求完整 struct，缺字段会报 Missing field） */
+  var WEBP_CFG_LOSSLESS={quality:75,target_size:0,target_PSNR:0,method:4,sns_strength:50,
+    filter_strength:60,filter_sharpness:0,filter_type:1,partitions:0,segments:4,pass:1,
+    show_compressed:0,preprocessing:0,autofilter:0,partition_limit:0,alpha_compression:1,
+    alpha_filtering:1,alpha_quality:100,lossless:1,exact:1,image_hint:0,emulate_jpeg_size:0,
+    thread_level:0,low_memory:0,near_lossless:100,use_delta_palette:0,use_sharp_yuv:0};
+  var webpEncPromise=null;
+  function getWebpEncoder(){
+    if(webpEncPromise)return webpEncPromise;
+    webpEncPromise=(function(){
+      var mods=['webp_enc_simd.js','webp_enc.js'];
+      function tryOne(base,mod){
+        return import(base+mod).then(function(m){return m.default();});
+      }
+      var chain=Promise.reject();
+      WEBP_ENC_CDNS.forEach(function(base){
+        mods.forEach(function(mod){
+          chain=chain.catch(function(){return tryOne(base,mod);});
+        });
+      });
+      return chain.catch(function(){webpEncPromise=null;return null;});
+    })();
+    return webpEncPromise;
+  }
+  function encodeVp8l(enc,rgba,w,h){
+    return extractVp8l(enc.encode(rgba,w,h,WEBP_CFG_LOSSLESS));
+  }
+
+  /* ---------- GIF → WebP（动图逐帧 VP8L + 容器组装） ----------
+     策略：disposal 2/3 的帧及其后一帧用整画布合成帧（blend=1 直接覆盖，
+     精确等于 GIF 该帧显示时刻的状态）；其余帧用偶对齐 rect + alpha 混色。 */
+  function gifToWebpPipeline(buf){
+    var gif=parseGif(new Uint8Array(buf));
+    return getWebpEncoder().then(function(enc){
+      if(!enc)return null;
+      var frames=gif.frames,n=frames.length,i;
+      if(n===1){
+        var f0=frames[0];
+        var full=new Uint8Array(gif.width*gif.height*4);
+        drawRect(full,gif.width,frameRgba(f0),f0);
+        var w0=enc.encode(full,gif.width,gif.height,WEBP_CFG_LOSSLESS);
+        return {blob:new Blob([w0],{type:'image/webp'}),animated:false,before:buf.byteLength,after:w0.length};
+      }
+      function frameIsFull(i){
+        var d=frames[i].disposal,dp=i>0?frames[i-1].disposal:0;
+        return d===2||d===3||dp===2||dp===3;
+      }
+      var anyFull=false;
+      for(i=0;i<n;i++)if(frameIsFull(i)){anyFull=true;break;}
+      var cw=gif.width,chh=gif.height;
+      cw+=cw&1;chh+=chh&1; // 画布补偶数维（rect 帧偶对齐扩展后可能多 1px，必须落在画布内）
+      var canvas=new Uint8Array(cw*chh*4),prev=null,outFrames=[];
+      for(i=0;i<n;i++){
+        var f=frames[i];
+        if(f.disposal===3)prev=canvas.slice();
+        var rgba=frameRgba(f);
+        var entry;
+        if(frameIsFull(i)){
+          drawRect(canvas,cw,rgba,f);
+          entry={x:0,y:0,w:cw,h:chh,delayMs:gifDelayMs(f.delay),dispose:0,blend:1,
+            payload:encodeVp8l(enc,canvas,cw,chh)};
+        }else{
+          drawRect(canvas,cw,rgba,f);
+          var ef=evenPadRgba(rgba,f);
+          entry={x:ef.x,y:ef.y,w:ef.w,h:ef.h,delayMs:gifDelayMs(f.delay),dispose:0,blend:0,
+            payload:encodeVp8l(enc,ef.rgba,ef.w,ef.h)};
+        }
+        outFrames.push(entry);
+        if(f.disposal===2){
+          for(var yy=f.y;yy<f.y+f.h;yy++)for(var xx=f.x;xx<f.x+f.w;xx++){
+            if(yy<0||xx<0||yy>=chh||xx>=cw)continue;
+            var di=(yy*cw+xx)*4;canvas[di]=0;canvas[di+1]=0;canvas[di+2]=0;canvas[di+3]=0;
+          }
+        }else if(f.disposal===3&&prev){canvas=prev;prev=null;}
+      }
+      var webp=assembleAnimatedWebp({width:cw,height:chh,loop:gif.loop,frames:outFrames});
+      return {blob:new Blob([webp],{type:'image/webp'}),animated:true,before:buf.byteLength,after:webp.length};
+    });
+  }
+
+  /* 上传前图片处理（v2.4.0 WebP-only 智能模式）：
+     - GIF（动图/静图）→ 无损 WebP（动图逐帧 VP8L，动画完整保留）；WASM 失败降级保留原 GIF
+     - PNG/WebP/BMP 等静态图 → WASM 真无损 WebP；WASM 失败降级 Canvas WebP 0.95（视觉无损）
+     - JPEG 源 → Canvas WebP 0.95 高质量转码（源已有损，真无损只会放大体积）
+     - 非图片文件 → 原样上传
+     只保留 WebP，不再保留原图。返回 {main, before, after, kind, note}。 */
+  function decodeToImageData(file){
+    return createImageBitmap(file,{imageOrientation:'from-image'}).then(function(bmp){
+      var canvas=document.createElement('canvas');
+      canvas.width=bmp.width;canvas.height=bmp.height;
+      var ctx=canvas.getContext('2d');
+      ctx.drawImage(bmp,0,0);
+      var w=bmp.width,h=bmp.height;
+      bmp.close&&bmp.close();
+      return ctx.getImageData(0,0,w,h);
+    });
+  }
+  function canvasWebpBlob(file,quality){
+    return createImageBitmap(file,{imageOrientation:'from-image'}).then(function(bmp){
+      var canvas=document.createElement('canvas');
+      canvas.width=bmp.width;canvas.height=bmp.height;
+      var ctx=canvas.getContext('2d');
+      ctx.drawImage(bmp,0,0);
+      var w=bmp.width,h=bmp.height;
+      bmp.close&&bmp.close();
+      return new Promise(function(res){
+        canvas.toBlob(function(blob){res(blob);},'image/webp',quality);
+      });
+    });
+  }
+  function webpFile(blob,baseName){
+    return new File([blob],baseName,{type:'image/webp',lastModified:Date.now()});
+  }
+  function processImage(file){
     var isGif=/\.gif$/i.test(file.name)||/image\/gif/i.test(file.type||'');
-    if(isGif){
-      return file.arrayBuffer().then(function(buf){
-        var out;
-        try{out=optimizeGifBytes(buf);}catch(e){out=null;}
-        if(!out||out.length>=file.size)return {main:file,original:null,before:file.size,after:file.size,kind:'gif'};
-        var gif=new File([out],file.name,{type:'image/gif',lastModified:Date.now()});
-        return {main:gif,original:null,before:file.size,after:out.length,kind:'gif'};
-      }).catch(function(){return {main:file,original:null,before:file.size,after:file.size,kind:'gif'};});
-    }
-    if(targetType==='original'||!isImage(file.type)){
+    var isImg=isImage(file.type)||/\.(png|jpe?g|bmp|webp|avif|tiff?|ico)$/i.test(file.name||'');
+    if(!isImg&&!isGif){
       return Promise.resolve({main:file,original:null,before:file.size,after:file.size,kind:'file'});
     }
-    var quality=file.size>1048576?0.95:0.92;
-    return createImageBitmap(file).then(function(bmp){
-      var canvas=document.createElement('canvas');
-      canvas.width=bmp.width;canvas.height=bmp.height; // 不缩放，保留完整分辨率
-      var ctx=canvas.getContext('2d');
-      if(targetType==='image/jpeg'){ctx.fillStyle='#ffffff';ctx.fillRect(0,0,canvas.width,canvas.height);}
-      ctx.drawImage(bmp,0,0);
-      bmp.close&&bmp.close();
-      return new Promise(function(res,rej){
-        canvas.toBlob(function(blob){
-          if(!blob)return rej(new Error('格式转换失败'));
-          var ext=targetType==='image/jpeg'?'jpg':targetType.split('/').pop();
-          var base=file.name.replace(/\.[^.]+$/,'')+'.'+ext;
-          res({main:new File([blob],base,{type:targetType,lastModified:Date.now()}),
-               original:file,before:file.size,after:blob.size,kind:'webp'});
-        },targetType,quality);
+    var base=file.name.replace(/\.[^.]+$/,'')+'.webp';
+    if(isGif){
+      return file.arrayBuffer()
+        .then(function(buf){return gifToWebpPipeline(buf);})
+        .then(function(r){
+          if(r){
+            return {main:webpFile(r.blob,base),original:null,before:r.before,after:r.after,
+              kind:r.animated?'gif-webp':'webp'};
+          }
+          // WASM 不可用：保留原 GIF（动画不丢，比坏 WebP 好）
+          return {main:file,original:null,before:file.size,after:file.size,kind:'gif',
+            note:'无损编码器不可用，已保留原 GIF'};
+        })
+        .catch(function(){
+          return {main:file,original:null,before:file.size,after:file.size,kind:'gif',
+            note:'GIF 转换失败，已保留原 GIF'};
+        });
+    }
+    var isJpeg=/image\/jpeg/i.test(file.type||'')||/\.jpe?g$/i.test(file.name||'');
+    if(isJpeg){
+      return canvasWebpBlob(file,0.95).then(function(blob){
+        if(!blob)throw new Error('decode fail');
+        return {main:webpFile(blob,base),original:null,before:file.size,after:blob.size,kind:'webp'};
+      }).catch(function(){
+        return {main:file,original:null,before:file.size,after:file.size,kind:'img',
+          note:'转 WebP 失败，已保留原格式'};
       });
-    }).catch(function(){return {main:file,original:null,before:file.size,after:file.size,kind:'webp'};});
+    }
+    return getWebpEncoder().then(function(enc){
+      if(!enc){
+        return canvasWebpBlob(file,0.95).then(function(blob){
+          if(!blob)throw new Error('decode fail');
+          return {main:webpFile(blob,base),original:null,before:file.size,after:blob.size,kind:'webp',
+            note:'无损编码器不可用，已用浏览器编码（视觉无损）'};
+        });
+      }
+      return decodeToImageData(file).then(function(imgData){
+        var webp=enc.encode(imgData.data,imgData.width,imgData.height,WEBP_CFG_LOSSLESS);
+        return {main:webpFile(new Blob([webp],{type:'image/webp'}),base),original:null,
+          before:file.size,after:webp.length,kind:'webp'};
+      });
+    }).catch(function(){
+      return canvasWebpBlob(file,0.95).then(function(blob){
+        if(!blob)return {main:file,original:null,before:file.size,after:file.size,kind:'img',
+          note:'转 WebP 失败，已保留原格式'};
+        return {main:webpFile(blob,base),original:null,before:file.size,after:blob.size,kind:'webp',
+          note:'无损编码失败，已用浏览器编码（视觉无损）'};
+      }).catch(function(){
+        return {main:file,original:null,before:file.size,after:file.size,kind:'img',
+          note:'转 WebP 失败，已保留原格式'};
+      });
+    });
   }
 
   /* ================= 渲染 ================= */
@@ -810,7 +995,7 @@ Content-Type: application/json
     var kw=state.search.trim().toLowerCase();
     var list=state.items.filter(function(it){
       if(state.filter==='webp'){
-        // 默认只显示 WebP；隐藏被保留的原图（非 webp、非 gif 的图片）。GIF 动图不转换，照常显示。
+        // 默认只显示 WebP（v2.4.0 起新上传只有 WebP；旧数据里的历史原图仍会被隐藏）
         if(isImage(it.type)&&!/\.webp$/i.test(it.name||'')&&!isGifLike(it.name||'',it.type))return false;
       }
       if(state.filter==='image'&&!isImage(it.type))return false;
@@ -1002,23 +1187,16 @@ Content-Type: application/json
           var q={name:f.name,pct:0,status:'pending',thumb:''};
           if(isImage(f.type)&&!isGifLike(f.name,f.type)){try{q.thumb=URL.createObjectURL(f);}catch(e){}}
           queue.push(q);renderQueue();
-          processImage(f,'image/webp').then(function(r){
-            var jobs=[];
-            jobs.push({file:r.main,hint:'压缩版'});
-            if(r.original)jobs.push({file:r.original,hint:'原图'});
-            var chain=Promise.resolve(), saved=0, per=100/jobs.length;
-            jobs.forEach(function(job){
-              chain=chain.then(function(){
-                return API.upload(job.file,function(p){
-                  q.pct=Math.round(saved+per*p/100);renderQueue();
-                }).then(function(){saved+=per;q.pct=Math.round(saved);renderQueue();});
-              });
+          processImage(f).then(function(r){
+            var chain=API.upload(r.main,function(p){
+              q.pct=Math.round(p);renderQueue();
             });
             return chain.then(function(){
               q.pct=100;q.status='ok';renderQueue();
               var note='';
-              if(r.kind==='gif'&&r.after<r.before)note=' · GIF 无损压缩 '+fmtSize(r.before)+'→'+fmtSize(r.after);
-              else if(r.original)note=' · '+fmtSize(r.before)+'→'+fmtSize(r.after)+'（WebP+原图）';
+              if(r.after&&r.after!==r.before)note=' · '+fmtSize(r.before)+'→'+fmtSize(r.after)+'（WebP）';
+              else if(r.kind==='file')note=' · 原样上传';
+              if(r.note)note+='（'+r.note+'）';
               toast('已上传：'+f.name+note,'ok');
               return refresh();
             });
