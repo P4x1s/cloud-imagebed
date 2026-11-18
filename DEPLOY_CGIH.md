@@ -4,6 +4,19 @@
 > 全程你只需要操作 GitHub 网页和 Cloudflare 网页，**不需要在本地装 wrangler**。
 > 预计 15–20 分钟。
 
+## 当前进度（已自动完成的部分）
+
+| 项目 | 状态 |
+|------|------|
+| 代码推送到 `main` 分支（9 个文件，逐字节校验一致） | ✅ 已完成 |
+| 创建 `storage` 分支（供 Worker 存文件） | ✅ 已完成 |
+| `wrangler.toml` 配置（REPO=`P4x1s/CGIH`、BRANCH=`storage`）| ✅ 已完成 |
+| Actions workflow（含 `--keep-vars`、owner 限制）| ✅ 已完成 |
+| GitHub 侧 2 个部署密钥 | ⏳ 待你配置（第 2 步）|
+| Cloudflare 侧 2 个运行时密钥 | ⏳ 待你配置（第 3 步）|
+
+> 注：首次 push 后 Actions 会跑一次并失败（因缺密钥），这是正常的。配好密钥后 Re-run 即可。
+
 ---
 
 ## 工作原理（先看懂，操作更稳）
@@ -36,7 +49,11 @@ raw.githubusercontent.com/P4x1s/CGIH/storage/...  ← 图片直链即时预览
 
 ---
 
-## 第 1 步：把代码推送到 CGIH 的 main 分支
+## 第 1 步：把代码推送到 CGIH 的 main 分支 ✅ 已完成
+
+代码已通过 GitHub API 推送完毕，`main` 与 `storage` 两个分支均已创建，9 个文件逐字节校验一致。**本步可跳过。**
+
+以下为留档（如需手动重推才用）：
 
 在本机找一个目录，执行（把 `<...>` 换成你的）：
 
@@ -129,7 +146,11 @@ git push -u origin main
 
 ---
 
-## 第 5 步：创建 storage 分支（存文件用）
+## 第 5 步：创建 storage 分支（存文件用）✅ 已完成
+
+`storage` 分支已创建并指向初始 commit，Worker 后续会自动往该分支提交文件。**本步可跳过。**
+
+以下为留档（如需手动创建才用）：
 
 Worker 上传的文件要提交到 `storage` 分支。用命令行在本机 CGIH 目录执行：
 
