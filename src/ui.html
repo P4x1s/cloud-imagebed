@@ -65,8 +65,10 @@
   /* Page head */
   .pagehead{display:flex;align-items:baseline;gap:10px;margin-bottom:18px;padding:0 2px}
   .pagehead h1{font-size:19px;font-weight:750;letter-spacing:-.4px}
-  .pagehead .meta{color:var(--muted);font-size:12.5px;display:flex;gap:14px;flex-wrap:wrap}
-  .pagehead .meta b{color:var(--text);font-weight:650}
+  .pagehead .meta{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:3px 11px;box-shadow:var(--shadow-sm);white-space:nowrap}
+  .chip b{color:var(--text);font-weight:700}
+  .chip svg{width:13px;height:13px;color:var(--accent)}
   .pagehead .spacer{flex:1}
 
   /* Card */
@@ -166,8 +168,10 @@
   .q-head{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--border);font-size:12.5px;font-weight:650}
   .q-sub{color:var(--muted);font-weight:400}
   #queueList{padding:6px 12px}
-  .q-item{padding:7px 0;border-bottom:1px solid var(--border)}
+  .q-item{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)}
   .q-item:last-child{border-bottom:none}
+  .q-thumb{width:38px;height:38px;flex-shrink:0;border-radius:7px;object-fit:cover;background:var(--surface2);border:1px solid var(--border)}
+  .q-body{flex:1;min-width:0}
   .q-row{display:flex;justify-content:space-between;gap:8px;font-size:12px}
   .q-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .q-status{color:var(--muted);flex-shrink:0}
@@ -199,6 +203,8 @@
   .link-row{display:flex;align-items:center;gap:8px;margin-bottom:10px}
   .link-row label{width:74px;flex-shrink:0;color:var(--muted);font-size:12px;font-weight:600}
   .link-row input{flex:1;min-width:0;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:7px 10px;color:var(--text);outline:none;font-size:12px}
+  .link-actions{display:flex;gap:8px;margin-top:14px}
+  .link-actions .btn{flex:1;justify-content:center}
   .api-block{background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:12px 14px;max-height:52vh;overflow:auto}
   .api-block h4{font-size:12.5px;margin:10px 0 3px;color:var(--accent)}
   .api-block h4:first-child{margin-top:0}
@@ -279,9 +285,9 @@
     <div class="pagehead">
       <h1>文件库</h1>
       <div class="meta">
-        <span>已托管 <b id="chipCount">0</b> 个文件</span>
-        <span>单文件上限 <b id="chipMax">50 MB</b></span>
-        <span>访问保护 <b id="chipAuth">—</b></span>
+        <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>已托管 <b id="chipCount">0</b></span>
+        <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>单张上限 <b id="chipMax">50 MB</b></span>
+        <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l7 4v6c0 5-3 8-7 10-4-2-7-5-7-10V6z"/></svg>访问保护 <b id="chipAuth">—</b></span>
       </div>
       <div class="spacer"></div>
     </div>
@@ -318,16 +324,6 @@
           <span class="opt-hint" id="cdnHint">影响生成的直链地址</span>
         </div>
         <div class="opt-row">
-          <div class="opt-label">输出格式</div>
-          <div class="seg" id="formatSeg">
-            <button data-format="original">原图</button>
-            <button data-format="image/webp" class="active">WebP</button>
-            <button data-format="image/jpeg">JPEG</button>
-            <button data-format="image/png">PNG</button>
-          </div>
-          <span class="opt-hint">默认转 WebP（保高清）并保留原图，动图不变</span>
-        </div>
-        <div class="opt-row">
           <div class="opt-label">并发上传</div>
           <div class="seg" id="concurrentSeg">
             <button data-concurrent="1">1</button>
@@ -346,7 +342,8 @@
         <input type="text" id="searchInput" placeholder="搜索文件名、扩展名… (Ctrl+K)">
       </div>
       <div class="seg" id="filterSeg">
-        <button data-filter="all" class="active">全部</button>
+        <button data-filter="webp" class="active" title="只显示 WebP，隐藏保留的原图">WebP</button>
+        <button data-filter="all">全部</button>
         <button data-filter="image">图片</button>
         <button data-filter="video">视频</button>
         <button data-filter="file">文件</button>
@@ -403,11 +400,15 @@
   <div class="modal">
     <h3>复制文件链接</h3>
     <div class="modal-sub">当前线路：<span id="lnkLine">默认线路</span> · 可在上传设置中切换 CDN</div>
-    <div class="link-row"><label>直链</label><input id="lnkDirect" readonly><button class="btn" data-copy="lnkDirect">复制</button></div>
-    <div class="link-row"><label>Markdown</label><input id="lnkMd" readonly><button class="btn" data-copy="lnkMd">复制</button></div>
+    <div class="link-row"><label>URL</label><input id="lnkDirect" readonly><button class="btn" data-copy="lnkDirect">复制</button></div>
     <div class="link-row"><label>HTML</label><input id="lnkHtml" readonly><button class="btn" data-copy="lnkHtml">复制</button></div>
     <div class="link-row"><label>BBCode</label><input id="lnkBb" readonly><button class="btn" data-copy="lnkBb">复制</button></div>
-    <button class="btn" id="lnkClose" style="width:100%;justify-content:center;margin-top:14px">关闭</button>
+    <div class="link-row"><label>Markdown</label><input id="lnkMd" readonly><button class="btn" data-copy="lnkMd">复制</button></div>
+    <div class="link-row"><label>MD 带链接</label><input id="lnkMdLink" readonly><button class="btn" data-copy="lnkMdLink">复制</button></div>
+    <div class="link-actions">
+      <button class="btn primary" id="lnkCopyAll">复制全部</button>
+      <button class="btn" id="lnkClose">关闭</button>
+    </div>
   </div>
 </div>
 
@@ -443,7 +444,7 @@ Content-Type: application/json
   var IS_DEMO = window.LOCAL_DEMO === true;
   var API_BASE = window.API_BASE || '';
   var state = {
-    items:[], filter:'all', sort:'new', view:'grid', search:'', authed:false, config:null,
+    items:[], filter:'webp', sort:'new', view:'grid', search:'', authed:false, config:null,
     lbIndex:-1, cdn:'raw', format:'image/webp', concurrent:3, batch:false, selected:{}, lastPickIdx:-1
   };
 
@@ -646,6 +647,10 @@ Content-Type: application/json
   function filtered(){
     var kw=state.search.trim().toLowerCase();
     var list=state.items.filter(function(it){
+      if(state.filter==='webp'){
+        // 默认只显示 WebP；隐藏被保留的原图（非 webp、非 gif 的图片）。GIF 动图不转换，照常显示。
+        if(isImage(it.type)&&!/\.webp$/i.test(it.name||'')&&!isGifLike(it.name||'',it.type))return false;
+      }
       if(state.filter==='image'&&!isImage(it.type))return false;
       if(state.filter==='video'&&!isVideo(it.type))return false;
       if(state.filter==='file'&&(isImage(it.type)||isVideo(it.type)))return false;
@@ -781,6 +786,7 @@ Content-Type: application/json
     $('lnkMd').value=isImage(it.type)?('!['+it.name+']('+u+')'):('['+it.name+']('+u+')');
     $('lnkHtml').value=isImage(it.type)?('<img src="'+u+'" alt="'+esc(it.name)+'">'):('<a href="'+u+'">'+esc(it.name)+'</a>');
     $('lnkBb').value=isImage(it.type)?('[img]'+u+'[/img]'):'[url='+u+']'+it.name+'[/url]';
+    $('lnkMdLink').value=isImage(it.type)?('[!['+it.name+']('+u+')]('+u+')'):('['+it.name+']('+u+')');
     $('linkModal').classList.remove('hidden');
   }
 
@@ -812,8 +818,9 @@ Content-Type: application/json
     $('queueList').innerHTML=queue.map(function(q){
       var cls=q.status==='ok'?'ok':q.status==='err'?'err':'';
       var st=q.status==='ok'?'完成':q.status==='err'?('失败'+(q.error?' · '+q.error:'')):(q.pct+'%');
-      return '<div class="q-item"><div class="q-row"><span class="q-name" title="'+esc(q.name)+'">'+esc(q.name)+'</span>'+
-        '<span class="q-status '+cls+'">'+st+'</span></div><div class="bar"><i class="'+cls+'" style="width:'+q.pct+'%"></i></div></div>';
+      var th=q.thumb?'<img class="q-thumb" src="'+esc(q.thumb)+'" alt="">':'<div class="q-thumb"></div>';
+      return '<div class="q-item">'+th+'<div class="q-body"><div class="q-row"><span class="q-name" title="'+esc(q.name)+'">'+esc(q.name)+'</span>'+
+        '<span class="q-status '+cls+'">'+st+'</span></div><div class="bar"><i class="'+cls+'" style="width:'+q.pct+'%"></i></div></div></div>';
     }).join('');
   }
   function runUploadQueue(files){
@@ -830,8 +837,10 @@ Content-Type: application/json
       while(active<limit&&idx<arr.length){
         (function(f){
           active++;idx++;
-          var q={name:f.name,pct:0,status:'pending'};queue.push(q);renderQueue();
-          processImage(f,state.format).then(function(r){
+          var q={name:f.name,pct:0,status:'pending',thumb:''};
+          if(isImage(f.type)&&!isGifLike(f.name,f.type)){try{q.thumb=URL.createObjectURL(f);}catch(e){}}
+          queue.push(q);renderQueue();
+          processImage(f,'image/webp').then(function(r){
             var jobs=[];
             jobs.push({file:r.main,hint:'压缩版'});
             if(r.original)jobs.push({file:r.original,hint:'原图'});
@@ -997,16 +1006,13 @@ Content-Type: application/json
       if(!ok)toast('当前未配置该线路所需信息，直链不可用','err');
       render(); // 切换线路后立即按新地址重渲染缩略图/直链
     });
-    bindSeg('formatSeg','format',function(){
-      if(state.format!=='original')toast('上传图片将转为 '+state.format.split('/').pop().toUpperCase()+' 并保留原图','ok');
-    });
     bindSeg('concurrentSeg','concurrent',function(){
       state.concurrent=parseInt(state.concurrent,10)||3;
     });
     $('searchInput').addEventListener('input',function(){state.search=this.value;render();});
-    bindSeg('filterSeg','filter');
-    bindSeg('sortSeg','sort');
-    bindSeg('viewSeg','view');
+    bindSeg('filterSeg','filter',function(){render();});
+    bindSeg('sortSeg','sort',function(){render();});
+    bindSeg('viewSeg','view',function(){render();});
 
     $('btnBatchMode').addEventListener('click',function(){
       state.batch=!state.batch;state.selected={};render();
@@ -1024,6 +1030,7 @@ Content-Type: application/json
       if(items.length)removeItems(items);
     });
     $('btnClearQueue').addEventListener('click',function(){
+      queue.forEach(function(q){if(q.status!=='pending'&&q.thumb){try{URL.revokeObjectURL(q.thumb);}catch(e){}}});
       queue=queue.filter(function(q){return q.status==='pending';});
       renderQueue();if(!queue.length)$('queue').classList.add('hidden');
     });
@@ -1050,6 +1057,12 @@ Content-Type: application/json
     });
     $('linkModal').addEventListener('click',function(e){if(e.target===this)this.classList.add('hidden');});
     $('lnkClose').addEventListener('click',function(){$('linkModal').classList.add('hidden');});
+    $('lnkCopyAll').addEventListener('click',function(){
+      var ids=['lnkDirect','lnkHtml','lnkBb','lnkMd','lnkMdLink'];
+      var labels=['URL','HTML','BBCode','Markdown','MD 带链接'];
+      var text=ids.map(function(id,i){return labels[i]+':\n'+$(id).value;}).join('\n\n');
+      copyText(text).then(function(){toast('已复制全部 5 种格式','ok');});
+    });
     Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'),function(b){
       b.addEventListener('click',function(){
         var el=$(b.getAttribute('data-copy'));
