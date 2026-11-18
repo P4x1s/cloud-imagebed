@@ -322,12 +322,12 @@
         <div class="opt-row">
           <div class="opt-label">输出格式</div>
           <div class="seg" id="formatSeg">
-            <button data-format="original" class="active">原图</button>
-            <button data-format="image/webp">WebP</button>
+            <button data-format="original">原图</button>
+            <button data-format="image/webp" class="active">WebP</button>
             <button data-format="image/jpeg">JPEG</button>
             <button data-format="image/png">PNG</button>
           </div>
-          <span class="opt-hint">上传前本地转换，动图保持不变</span>
+          <span class="opt-hint">默认转 WebP（保高清）并保留原图，动图不变</span>
         </div>
         <div class="opt-row">
           <div class="opt-label">并发上传</div>
@@ -446,7 +446,7 @@ Content-Type: application/json
   var API_BASE = window.API_BASE || '';
   var state = {
     items:[], filter:'all', sort:'new', view:'grid', search:'', authed:false, config:null,
-    lbIndex:-1, cdn:'raw', format:'original', concurrent:3, batch:false, selected:{}, lastPickIdx:-1
+    lbIndex:-1, cdn:'raw', format:'image/webp', concurrent:3, batch:false, selected:{}, lastPickIdx:-1
   };
 
   /* ---------------- 工具 ---------------- */
@@ -613,13 +613,21 @@ Content-Type: application/json
   };
   var API = IS_DEMO ? DemoAPI : WorkerAPI;
 
-  /* 上传前图片格式转换（浏览器本地 Canvas） */
-  function convertImage(file,targetType){
-    if(targetType==='original')return Promise.resolve(file);
-    if(!isImage(file.type)||isGifLike(file.name,file.type))return Promise.resolve(file);
+  /* 上传前图片压缩 / 格式转换（浏览器本地 Canvas，视觉无损）
+     返回 {main, original, before, after}：
+       main     = 压缩/转换后的文件（默认 WebP）
+       original = 原始文件（发生转换时保留，两份都存）
+       before/after = 字节数，用于展示压缩效果
+     视觉无损策略：保持原始分辨率（不缩放），大图(>1MB) quality 0.95、其余 0.92。
+     非图片 / GIF / SVG 不转换，只返回原文件。*/
+  function processImage(file,targetType){
+    if(targetType==='original'||!isImage(file.type)||isGifLike(file.name,file.type)){
+      return Promise.resolve({main:file,original:null,before:file.size,after:file.size});
+    }
+    var quality=file.size>1048576?0.95:0.92;
     return createImageBitmap(file).then(function(bmp){
       var canvas=document.createElement('canvas');
-      canvas.width=bmp.width;canvas.height=bmp.height;
+      canvas.width=bmp.width;canvas.height=bmp.height; // 不缩放，保留完整分辨率
       var ctx=canvas.getContext('2d');
       if(targetType==='image/jpeg'){ctx.fillStyle='#ffffff';ctx.fillRect(0,0,canvas.width,canvas.height);}
       ctx.drawImage(bmp,0,0);
@@ -629,10 +637,11 @@ Content-Type: application/json
           if(!blob)return rej(new Error('格式转换失败'));
           var ext=targetType==='image/jpeg'?'jpg':targetType.split('/').pop();
           var base=file.name.replace(/\.[^.]+$/,'')+'.'+ext;
-          res(new File([blob],base,{type:targetType,lastModified:Date.now()}));
-        },targetType,0.92);
+          res({main:new File([blob],base,{type:targetType,lastModified:Date.now()}),
+               original:file,before:file.size,after:blob.size});
+        },targetType,quality);
       });
-    }).catch(function(){return file;});
+    }).catch(function(){return {main:file,original:null,before:file.size,after:file.size};});
   }
 
   /* ================= 渲染 ================= */
@@ -824,16 +833,29 @@ Content-Type: application/json
         (function(f){
           active++;idx++;
           var q={name:f.name,pct:0,status:'pending'};queue.push(q);renderQueue();
-          convertImage(f,state.format).then(function(ready){
-            API.upload(ready,function(p){q.pct=p;renderQueue();}).then(function(){
-              q.pct=100;q.status='ok';renderQueue();toast('已上传：'+f.name,'ok');
+          processImage(f,state.format).then(function(r){
+            var jobs=[];
+            jobs.push({file:r.main,hint:'压缩版'});
+            if(r.original)jobs.push({file:r.original,hint:'原图'});
+            var chain=Promise.resolve(), saved=0, per=100/jobs.length;
+            jobs.forEach(function(job){
+              chain=chain.then(function(){
+                return API.upload(job.file,function(p){
+                  q.pct=Math.round(saved+per*p/100);renderQueue();
+                }).then(function(){saved+=per;q.pct=Math.round(saved);renderQueue();});
+              });
+            });
+            return chain.then(function(){
+              q.pct=100;q.status='ok';renderQueue();
+              var note=r.original?(' · '+fmtSize(r.before)+'→'+fmtSize(r.after)+'（压缩版+原图）'):'';
+              toast('已上传：'+f.name+note,'ok');
               return refresh();
-            }).catch(function(e){
-              q.status='err';q.error=e.message;renderQueue();
-              if(e.unauthorized||e.message==='unauthorized'){logout();return;}
-              toast('上传失败：'+f.name+' · '+e.message,'err');
-            }).then(function(){active--;next();});
-          }).catch(function(){active--;next();});
+            });
+          }).catch(function(e){
+            q.status='err';q.error=e.message;renderQueue();
+            if(e.unauthorized||e.message==='unauthorized'){logout();return;}
+            toast('上传失败：'+f.name+' · '+e.message,'err');
+          }).then(function(){active--;next();});
         })(arr[idx]);
       }
     }
@@ -978,7 +1000,7 @@ Content-Type: application/json
       render(); // 切换线路后立即按新地址重渲染缩略图/直链
     });
     bindSeg('formatSeg','format',function(){
-      if(state.format!=='original')toast('已选择转换格式，上传图片时将在浏览器本地转换','ok');
+      if(state.format!=='original')toast('上传图片将转为 '+state.format.split('/').pop().toUpperCase()+' 并保留原图','ok');
     });
     bindSeg('concurrentSeg','concurrent',function(){
       state.concurrent=parseInt(state.concurrent,10)||3;

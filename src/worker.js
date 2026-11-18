@@ -31,7 +31,7 @@
 
 import uiHtml from './ui.html';
 
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.2.1';
 const SESSION_TTL = 7 * 24 * 3600; // 会话有效期 7 天（秒）
 const COOKIE_NAME = 'cfib_session';
 // GitHub 单文件建议上限 50MB（硬上限 100MB）；base64 后请求体膨胀约 1/3，
