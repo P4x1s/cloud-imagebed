@@ -1,0 +1,9 @@
+# 本地开发用的 Secret 模板，复制为 .dev.vars 后填入真实值。
+# .dev.vars 已被 .gitignore 忽略，不会被提交。
+# 本地运行：wrangler dev
+
+# GitHub Personal Access Token (classic)：勾选 repo（私有仓库）或 public_repo（公开仓库）
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 前端登录口令（自定义一个强口令）
+ACCESS_PASSWORD=change-me-to-a-strong-password

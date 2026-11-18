@@ -1,0 +1,45 @@
+#: CloudImageBed — Cloudflare Workers 配置
+#: 完整文档：https://developers.cloudflare.com/workers/wrangler/configuration/
+
+#: 项目名称，同时决定 *.workers.dev 子域名前缀（占用则 Cloudflare 自动加后缀）
+name = "cloud-imagebed"
+
+#: Worker 入口（前端页面 + 后端 API 单文件）
+main = "src/worker.js"
+
+#: 兼容性日期，固定 API 行为
+compatibility_date = "2026-11-18"
+
+#: 允许把 ui.html 作为文本导入（Wrangler 内置 Text 规则）
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+target = "esm"
+
+#: ─────────────────────────────────────────────────────────────
+#: 非敏感变量：改成你自己的值
+#:   REPO        = "owner/repo"  存储用的 GitHub 仓库（已填 P4x1s/CGIH）
+#:   BRANCH      = "storage"     存文件的分支（与源码 main 隔离）
+#:   DIR_PREFIX  = ""            仓库内的目录前缀，如 "images"（留空=根目录）
+#:   MAX_UPLOAD_MB = "25"        单文件大小上限（MB）
+#:   PUBLIC_BASE = ""            图片公开直链前缀，留空用 raw.githubusercontent.com
+#:                               也可填 jsDelivr CDN，如 https://cdn.jsdelivr.net/gh/owner/repo@main
+#:   ACCESS_PASSWORD 不写这里！它是 Secret，见下方说明。
+#: ─────────────────────────────────────────────────────────────
+[vars]
+REPO = "P4x1s/CGIH"
+# 上传的文件提交到独立的 storage 分支，与源码 main 隔离，互不污染
+BRANCH = "storage"
+DIR_PREFIX = ""
+MAX_UPLOAD_MB = "25"
+# 公开仓库可用 raw 直链预览；如需国内加速可改 jsDelivr：
+# PUBLIC_BASE = "https://cdn.jsdelivr.net/gh/P4x1s/CGIH@storage"
+PUBLIC_BASE = ""
+
+#: ─────────────────────────────────────────────────────────────
+#: Secret（不要写进本文件，用命令或 Dashboard 添加）：
+#:   wrangler secret put GITHUB_TOKEN      # GitHub Personal Access Token
+#:   wrangler secret put ACCESS_PASSWORD   # 前端访问口令
+#: 本地开发则写进 .dev.vars（已被 .gitignore 忽略）。
+#: ⚠️ 部署务必带 --keep-vars，否则 Dashboard 上的 Secret 会被清空。
+#: ─────────────────────────────────────────────────────────────
