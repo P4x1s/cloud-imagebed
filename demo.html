@@ -300,7 +300,7 @@
       <div id="dropzone">
         <div class="dz-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M20 16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3"/></svg></div>
         <div class="dz-title">拖拽文件到此处，或 <span style="color:var(--accent)">点击选择</span></div>
-        <div class="dz-sub">图片自动压缩为 WebP（≤1MB）· 其他文件原样上传 · 可整文件夹上传 · <kbd>Ctrl</kbd> + <kbd>V</kbd> 粘贴</div>
+        <div class="dz-sub">图片智能压缩为 WebP（画质优先 · 尺寸不变）· 其他文件原样上传 · 可整文件夹上传 · <kbd>Ctrl</kbd> + <kbd>V</kbd> 粘贴</div>
         <div class="dz-buttons">
           <button class="btn primary" id="btnPickFiles" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>选择文件</button>
           <button class="btn" id="btnPickFolder" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>选择文件夹</button>
@@ -618,12 +618,13 @@ Content-Type: application/json
   };
   var API = IS_DEMO ? DemoAPI : WorkerAPI;
 
-  /* ---------------- 图片 → WebP 转换管线（v2.5.0） ----------------
+  /* ---------------- 图片 → WebP 转换管线（v2.6.0 画质优先） ----------------
      智能模式：PNG/GIF/静态图走 WASM 真无损（jsquash/libwebp）；JPEG 源用 0.95 高质量
      有损转码（源本身已有损，无损重编码只会放大体积）。GIF 动图自研解析器逐帧
      解码 → 逐帧编码 → 组装动图 WebP 容器，动画/时序/循环完整保留。
-     只保留 WebP，不再保留原图；非图片文件不压缩、原样上传。
-     产物体积上限 1MB：无损超限自动「降级有损 → 降低质量 → 缩小尺寸」直到达标。
+     只压缩图片；非图片文件不压缩、原样上传；尺寸永远与原图一致（从不缩放）。
+     体积目标 1MB：无损超限自动转高质量有损（质量 90→70，视觉几乎无差别），
+     质量下限仍超限时保画质优先（宁超 1MB 也不降画质/尺寸）。
      WASM 多 CDN 加载，失败时降级：动图 → 保留原 GIF；静态图 → 浏览器 Canvas 编码。 */
   function concatBytes(parts){
     var len=0,i;for(i=0;i<parts.length;i++)len+=parts[i].length;
@@ -844,21 +845,9 @@ Content-Type: application/json
       use_sharp_yuv:0};
   }
   var WEBP_CFG_LOSSLESS=webpConfig(75,true);
-  /* 转换后 WebP 体积上限 1MB：超出时自动「降级有损 → 降低质量 → 缩小尺寸」直到达标 */
+  /* WebP 体积目标 1MB（画质优先：只通过编码质量逼近，从不缩放尺寸、
+     质量下限 70 仍超限时保留高画质结果） */
   var MAX_WEBP_BYTES=1048576;
-  /* 最近邻缩放（超限时缩小尺寸再压） */
-  function nearestResize(rgba,w,h,nw,nh){
-    var out=new Uint8Array(nw*nh*4);
-    for(var y=0;y<nh;y++){
-      var sy=Math.min(h-1,(y*h/nh)|0);
-      for(var x=0;x<nw;x++){
-        var sx=Math.min(w-1,(x*w/nw)|0);
-        var si=(sy*w+sx)*4,di=(y*nw+x)*4;
-        out[di]=rgba[si];out[di+1]=rgba[si+1];out[di+2]=rgba[si+2];out[di+3]=rgba[si+3];
-      }
-    }
-    return out;
-  }
   var webpEncPromise=null;
   function getWebpEncoder(){
     if(webpEncPromise)return webpEncPromise;
@@ -889,30 +878,21 @@ Content-Type: application/json
   /* ---------- GIF → WebP（动图逐帧编码 + 容器组装） ----------
      策略：disposal 2/3 的帧及其后一帧用整画布合成帧（blend=1 直接覆盖，
      精确等于 GIF 该帧显示时刻的状态）；其余帧用偶对齐 rect + alpha 混色。
-     v2.5.0：scale 用于超 1MB 上限时整体缩放重压；lossyQ 非 null 时逐帧有损编码 */
-  function gifToWebpPipeline(buf,scale,lossyQ){
-    scale=scale||1;
+     v2.6.0：永不缩放（尺寸与原 GIF 一致）；lossyQ 非 null 时逐帧高质量有损编码 */
+  function gifToWebpPipeline(buf,lossyQ){
     var gif=parseGif(new Uint8Array(buf));
     return getWebpEncoder().then(function(enc){
       if(!enc)return null;
       var frames=gif.frames,n=frames.length,i;
       function encOne(rgba,w,h){return encodeFrameBody(enc,rgba,w,h,lossyQ);}
-      /* 缩放后的画布尺寸（保持偶数，rect 帧偶对齐后可能多 1px） */
-      var SW=Math.max(1,Math.round(gif.width*scale)),SH=Math.max(1,Math.round(gif.height*scale));
-      var cw=SW+(SW&1),chh=SH+(SH&1);
-      /* 帧坐标/尺寸缩放副本（frameRgba 仍用原始 indices + w/h 解码） */
-      function scaledFrame(f){
-        return {x:Math.round(f.x*scale),y:Math.round(f.y*scale),
-          w:Math.max(1,Math.round(f.w*scale)),h:Math.max(1,Math.round(f.h*scale))};
-      }
+      /* 画布尺寸与原 GIF 一致（多帧动图补偶数维：rect 帧偶对齐后可能多 1px） */
+      var cw=gif.width,chh=gif.height;
+      if(n>1){cw+=cw&1;chh+=chh&1;}
       if(n===1){
         var f0=frames[0];
-        var r0=frameRgba(f0);
-        var s0=scaledFrame(f0);
-        if(scale!==1)r0=nearestResize(r0,f0.w,f0.h,s0.w,s0.h);
-        var full=new Uint8Array(cw*chh*4);
-        drawRect(full,cw,r0,s0);
-        var w0=enc.encode(full,cw,chh,lossyQ==null?WEBP_CFG_LOSSLESS:webpConfig(lossyQ,false));
+        var full=new Uint8Array(gif.width*gif.height*4);
+        drawRect(full,gif.width,frameRgba(f0),f0);
+        var w0=enc.encode(full,gif.width,gif.height,lossyQ==null?WEBP_CFG_LOSSLESS:webpConfig(lossyQ,false));
         return {blob:new Blob([w0],{type:'image/webp'}),animated:false,before:buf.byteLength,after:w0.length};
       }
       function frameIsFull(i){
@@ -922,24 +902,22 @@ Content-Type: application/json
       var canvas=new Uint8Array(cw*chh*4),prev=null,outFrames=[];
       for(i=0;i<n;i++){
         var f=frames[i];
-        var sf=scaledFrame(f);
         var rgba=frameRgba(f);
-        if(scale!==1)rgba=nearestResize(rgba,f.w,f.h,sf.w,sf.h);
         if(f.disposal===3)prev=canvas.slice();
         var entry;
         if(frameIsFull(i)){
-          drawRect(canvas,cw,rgba,sf);
+          drawRect(canvas,cw,rgba,f);
           entry={x:0,y:0,w:cw,h:chh,delayMs:gifDelayMs(f.delay),dispose:0,blend:1,
             payload:encOne(canvas,cw,chh)};
         }else{
-          drawRect(canvas,cw,rgba,sf);
-          var ef=evenPadRgba(rgba,sf); // 偶对齐只用于 ANMF payload 矩形，画布绘制用真实坐标
+          drawRect(canvas,cw,rgba,f);
+          var ef=evenPadRgba(rgba,f); // 偶对齐只用于 ANMF payload 矩形，画布绘制用真实坐标
           entry={x:ef.x,y:ef.y,w:ef.w,h:ef.h,delayMs:gifDelayMs(f.delay),dispose:0,blend:0,
             payload:encOne(ef.rgba,ef.w,ef.h)};
         }
         outFrames.push(entry);
         if(f.disposal===2){
-          for(var yy=sf.y;yy<sf.y+sf.h;yy++)for(var xx=sf.x;xx<sf.x+sf.w;xx++){
+          for(var yy=f.y;yy<f.y+f.h;yy++)for(var xx=f.x;xx<f.x+f.w;xx++){
             if(yy<0||xx<0||yy>=chh||xx>=cw)continue;
             var di=(yy*cw+xx)*4;canvas[di]=0;canvas[di+1]=0;canvas[di+2]=0;canvas[di+3]=0;
           }
@@ -950,11 +928,13 @@ Content-Type: application/json
     });
   }
 
-  /* 上传前处理（v2.5.0）：
+  /* 上传前处理（v2.6.0 画质优先）：
      - 只压缩图片：PNG/WebP/BMP/JPEG/GIF 等 → WebP；非图片文件原样上传，不做任何处理
-     - 压缩产物（WebP）体积上限 1MB：无损结果超限时按「降级有损 → 降低质量 →
-       缩小尺寸」逐档重压，直到 ≤1MB；全部尝试仍超限则保留原格式（非 WebP 不受限）
-     - GIF 动图 → 动图 WebP（逐帧编码，动画完整保留），超限同样逐档降级
+     - 尺寸永远不变：从不缩放、从不降分辨率，输出与原图同尺寸
+     - 只做编码压缩：优先真无损；无损结果超 1MB 时改用高质量有损
+       （质量 90→70 逐档尝试，视觉上几乎与原图无差别）；质量 70 仍超 1MB
+       则保画质优先，保留质量 70 的结果（宁超 1MB 也不牺牲画质/尺寸）
+     - GIF 动图 → 动图 WebP（逐帧编码，动画完整保留），同样画质优先
      返回 {main, before, after, kind, note}。 */
   function decodeToImageData(file){
     return createImageBitmap(file,{imageOrientation:'from-image'}).then(function(bmp){
@@ -967,16 +947,13 @@ Content-Type: application/json
       return ctx.getImageData(0,0,w,h);
     });
   }
-  function canvasWebpBlob(file,quality,scale){
-    scale=scale||1;
+  function canvasWebpBlob(file,quality){
     return createImageBitmap(file,{imageOrientation:'from-image'}).then(function(bmp){
-      var w=Math.max(1,Math.round(bmp.width*scale)),h=Math.max(1,Math.round(bmp.height*scale));
       var canvas=document.createElement('canvas');
-      canvas.width=w;canvas.height=h;
+      canvas.width=bmp.width;canvas.height=bmp.height;
       var ctx=canvas.getContext('2d');
-      ctx.imageSmoothingEnabled=true;
-      ctx.drawImage(bmp,0,0,bmp.width,bmp.height,0,0,w,h);
-      var bw=bmp.width,bh=bmp.height;
+      ctx.drawImage(bmp,0,0);
+      var w=bmp.width,h=bmp.height;
       bmp.close&&bmp.close();
       return new Promise(function(res){
         canvas.toBlob(function(blob){res(blob);},'image/webp',quality);
@@ -987,71 +964,64 @@ Content-Type: application/json
     return new File([blob],baseName,{type:'image/webp',lastModified:Date.now()});
   }
 
-  /* ---------- 限高 1MB 包装 ---------- */
-  /* 静态图（WASM 路径）：无损 → 有损降质 → 缩放重压；全部失败返回 null */
-  var STATIC_QUALITIES=[90,80,70,60,50];
+  /* ---------- 压缩（画质优先，尺寸不变） ---------- */
+  /* 静态图（WASM 路径）：无损 → 高质量有损（90→70）；从不缩放 */
+  var STATIC_QUALITIES=[90,85,80,75,70];
   function staticWithLimit(enc,imgData){
-    function encBytes(rgba,w,h,q){
-      return enc.encode(rgba,w,h,q==null?WEBP_CFG_LOSSLESS:webpConfig(q,false));
+    function encBytes(q){
+      return enc.encode(imgData.data,imgData.width,imgData.height,q==null?WEBP_CFG_LOSSLESS:webpConfig(q,false));
     }
-    function tryQ(k){
-      if(k>=STATIC_QUALITIES.length)return tryScale(0.8,0);
-      var q=STATIC_QUALITIES[k];
-      var t=encBytes(imgData.data,imgData.width,imgData.height,q);
-      if(t.length<=MAX_WEBP_BYTES)return {bytes:t,note:'超 1MB，已转质量 '+q+' 有损'};
-      return tryQ(k+1);
-    }
-    function tryScale(scale,iter){
-      if(iter>=6)return null;
-      var w=Math.max(1,Math.round(imgData.width*scale)),h=Math.max(1,Math.round(imgData.height*scale));
-      var t=encBytes(nearestResize(imgData.data,imgData.width,imgData.height,w,h),w,h,75);
-      if(t.length<=MAX_WEBP_BYTES)return {bytes:t,note:'超 1MB，已缩放至 '+Math.round(scale*100)+'%'};
-      return tryScale(scale*0.8,iter+1);
-    }
-    var webp=encBytes(imgData.data,imgData.width,imgData.height,null);
+    var webp=encBytes(null);
     if(webp.length<=MAX_WEBP_BYTES)return {bytes:webp,note:''};
-    return tryQ(0);
+    var last=null;
+    for(var k=0;k<STATIC_QUALITIES.length;k++){
+      var q=STATIC_QUALITIES[k];
+      var t=encBytes(q);
+      last={bytes:t,q:q};
+      if(t.length<=MAX_WEBP_BYTES)return {bytes:t,note:'无损超限，已转质量 '+q+' 有损（画质几乎无损）'};
+    }
+    /* 质量下限（70）仍超 1MB：保画质优先——不再降质、绝不缩放尺寸 */
+    return {bytes:last.bytes,note:'已按画质优先压缩（质量 '+last.q+'），尺寸不变，体积略超 1MB'};
   }
-  /* Canvas 编码路径（JPEG 源 / WASM 不可用时的降级）：降质 → 缩放 */
+  /* Canvas 编码路径（JPEG 源 / WASM 不可用时的降级）：高质量有损降档，从不缩放 */
   function canvasWithLimit(file){
-    var qs=[0.95,0.85,0.75,0.65,0.55,0.45];
-    function tryQ(){
-      var k=0;
-      function step(){
-        if(k>=qs.length)return tryScale(0.8,0);
-        var q=qs[k++];
-        return canvasWebpBlob(file,q,1).then(function(blob){
+    var qs=[0.95,0.9,0.85,0.8,0.75,0.7];
+    var k=0;
+    function step(){
+      var q;
+      if(k>=qs.length){
+        /* 质量下限（70%）仍超 1MB：保画质优先，返回最后结果（尺寸不变） */
+        return canvasWebpBlob(file,0.7).then(function(blob){
           if(!blob)return null;
-          if(blob.size<=MAX_WEBP_BYTES)return {blob:blob,note:q<0.95?('超 1MB，已转 '+Math.round(q*100)+'% 质量'):''};
-          return step();
+          return {blob:blob,note:'已按画质优先压缩，尺寸不变，体积略超 1MB'};
         });
       }
-      return step();
-    }
-    function tryScale(scale,iter){
-      if(iter>=6)return Promise.resolve(null);
-      return canvasWebpBlob(file,0.75,scale).then(function(blob){
-        if(blob&&blob.size<=MAX_WEBP_BYTES)return {blob:blob,note:'超 1MB，已缩放至 '+Math.round(scale*100)+'%'};
-        return tryScale(scale*0.8,iter+1);
+      q=qs[k++];
+      return canvasWebpBlob(file,q).then(function(blob){
+        if(!blob)return null;
+        if(blob.size<=MAX_WEBP_BYTES)return {blob:blob,note:q<0.95?('无损超限，已转 '+Math.round(q*100)+'% 质量（画质几乎无损）'):''};
+        return step();
       });
     }
-    return tryQ();
+    return step();
   }
-  /* GIF：无损 → 有损降质 → 整体缩放，逐档尝试；全部仍超限返回 null（保留原 GIF） */
-  var GIF_LIMIT_ATTEMPTS=[{scale:1,q:null},{scale:1,q:80},{scale:1,q:65},{scale:1,q:50},
-    {scale:0.75,q:60},{scale:0.5,q:50}];
+  /* GIF：无损 → 高质量有损（90→70），从不缩放；质量下限仍超限也保留结果 */
+  var GIF_QUALITIES=[null,90,85,80,75,70];
   function gifWithLimit(buf){
     var i=0;
     function attempt(){
-      var a=GIF_LIMIT_ATTEMPTS[i++];
-      return gifToWebpPipeline(buf,a.scale,a.q).then(function(r){
+      var q=GIF_QUALITIES[i++];
+      return gifToWebpPipeline(buf,q).then(function(r){
         if(!r)throw new Error('no-enc'); // 编码器不可用
         if(r.after<=MAX_WEBP_BYTES){
-          if(a.q!=null)r.note='超 1MB，已转质量 '+a.q+' 有损';
-          else if(a.scale!==1)r.note='超 1MB，已缩放至 '+Math.round(a.scale*100)+'%';
+          if(q!=null)r.note='无损超限，已转质量 '+q+' 有损（画质几乎无损）';
           return r;
         }
-        if(i>=GIF_LIMIT_ATTEMPTS.length)return null; // 始终 >1MB：放弃转 WebP
+        if(i>=GIF_QUALITIES.length){
+          /* 质量下限仍超 1MB：保画质优先，保留质量 70 的动图 WebP */
+          r.note='已按画质优先压缩（质量 '+q+'），尺寸不变，体积略超 1MB';
+          return r;
+        }
         return attempt();
       });
     }
@@ -1074,9 +1044,9 @@ Content-Type: application/json
             return {main:webpFile(r.blob,base),original:null,before:r.before,after:r.after,
               kind:r.animated?'gif-webp':'webp',note:r.note||''};
           }
-          // 编码器不可用或全部尝试仍 >1MB：保留原 GIF（非 WebP 产物不受 1MB 约束）
+          // 编码器不可用：保留原 GIF（动画不丢，比坏 WebP 好）
           return {main:file,original:null,before:file.size,after:file.size,kind:'gif',
-            note:'无法转出 ≤1MB 的 WebP，已保留原 GIF'};
+            note:'无损编码器不可用，已保留原 GIF'};
         });
     }
     var isJpeg=/image\/jpeg/i.test(file.type||'')||/\.jpe?g$/i.test(file.name||'');
