@@ -18,22 +18,23 @@ target = "esm"
 
 #: ─────────────────────────────────────────────────────────────
 #: 非敏感变量：改成你自己的值
-#:   REPO        = "owner/repo"  存储用的 GitHub 仓库（已填 P4x1s/CGIH）
-#:   BRANCH      = "storage"     存文件的分支（与源码 main 隔离）
-#:   DIR_PREFIX  = ""            仓库内的目录前缀，如 "images"（留空=根目录）
+#:   REPO        = "owner/repo"  存储用的 GitHub 仓库（已填 P4x1s/cloud-imagebed-file）
+#:   BRANCH      = "main"        存文件的分支（专用文件仓库，用 main）
+#:   DIR_PREFIX  = ""            仓库内的目录前缀（留空=根目录）；上传会再自动按年月分目录
 #:   MAX_UPLOAD_MB = "25"        单文件大小上限（MB）
 #:   PUBLIC_BASE = ""            图片公开直链前缀，留空用 raw.githubusercontent.com
 #:                               也可填 jsDelivr CDN，如 https://cdn.jsdelivr.net/gh/owner/repo@main
 #:   ACCESS_PASSWORD 不写这里！它是 Secret，见下方说明。
 #: ─────────────────────────────────────────────────────────────
 [vars]
-REPO = "P4x1s/CGIH"
-# 上传的文件提交到独立的 storage 分支，与源码 main 隔离，互不污染
-BRANCH = "storage"
+# 文件与源码彻底分离：源码在 P4x1s/cloud-imagebed，上传文件在专用仓库 P4x1s/cloud-imagebed-file
+REPO = "P4x1s/cloud-imagebed-file"
+BRANCH = "main"
+# 留空即可；上传会自动按 年/月 分目录，如 2026/11/文件名
 DIR_PREFIX = ""
 MAX_UPLOAD_MB = "25"
 # 公开仓库可用 raw 直链预览；如需国内加速可改 jsDelivr：
-# PUBLIC_BASE = "https://cdn.jsdelivr.net/gh/P4x1s/CGIH@storage"
+# PUBLIC_BASE = "https://cdn.jsdelivr.net/gh/P4x1s/cloud-imagebed-file@main"
 PUBLIC_BASE = ""
 
 #: ─────────────────────────────────────────────────────────────
