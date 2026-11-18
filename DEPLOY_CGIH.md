@@ -1,8 +1,21 @@
-# CGIH 图床搭建指南（P4x1s/CGIH 专用）
+# CloudImageBed 部署说明（P4x1s/cloud-imagebed）
 
-> 目标是：源码推到 GitHub 后，**Actions 自动部署** Worker；Worker 用同一个仓库的 `storage` 分支存上传的文件。
-> 全程你只需要操作 GitHub 网页和 Cloudflare 网页，**不需要在本地装 wrangler**。
-> 预计 15–20 分钟。
+> ✅ **最终线上状态（2026-11-18 更新）——以下为当前真实配置，下方历史步骤仅作背景参考：**
+>
+> | 项目 | 当前状态 |
+> |------|----------|
+> | 访问地址 | **`https://cloud-imagebed.cashkeven.workers.dev`**（旧 `cgih` Worker 已删除）|
+> | 源码仓库 | `P4x1s/cloud-imagebed`（仅项目文件，main 分支；原名 CGIH）|
+> | **文件存储仓库** | **`P4x1s/cloud-imagebed-file`（公开、main 分支；原名 CGIH-FILE）** |
+> | Worker 名称 | `cloud-imagebed`（REPO=`P4x1s/cloud-imagebed-file`、`BRANCH=main`）|
+> | 目录结构 | 年月优先：`<YYYY>/<MM>/<时间戳>-<随机>-<文件名>`，如 `2026/11/179498...-a1b2c3d4-pic.png` |
+> | 图片直链 | `https://raw.githubusercontent.com/P4x1s/cloud-imagebed-file/main/<YYYY>/<MM>/<文件>` |
+> | 已完成清理 | 旧 `CGIH/storage` 分支已删除（SHA `d9db408...` 可恢复）；两个仓库已重命名 |
+> | 迁移清单 | 见 `MIGRATION_MANIFEST.md`、`REPO_MIGRATION_PLAN.md` |
+>
+> 下文第 1–6 步是**最初的搭建历史记录**（当时用 CGIH 的 storage 分支存文件、Worker 名为 cgih）。
+> 现已全面升级：独立文件仓库 + 仓库改名 + Worker 改名 + 年月优先目录。
+> 那些步骤里的 `storage` 分支、`P4x1s/CGIH`、`cgih` 等**不再适用**，仅作背景参考。
 
 ## 当前进度（已自动完成的部分）
 
