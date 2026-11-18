@@ -232,16 +232,69 @@
   .toast.ok{border-left-color:var(--success)}
   .toast.err{border-left-color:var(--danger)}
 
+  /* ---------- 响应式适配 ----------
+     ≤1024 平板横屏 / ≤900 平板竖屏与折叠屏 / ≤700 手机 / 触屏设备 hover 兜底 */
+  @media(max-width:1024px){
+    .toolbar{gap:7px}
+    .search{min-width:150px}
+    #grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+    .settings .opt-row{gap:8px}
+    .api-block{max-height:60vh}
+  }
+  @media(max-width:900px){
+    body{overflow-x:clip} /* 防个别固定宽度元素把整页撑出横向错位 */
+    header{padding:10px 14px}
+    .toolbar .search{flex:1 1 100%} /* 搜索框独占一行，筛选/排序/视图一行放下 */
+    .toolbar{align-items:flex-start}
+    .toolbar .seg{flex-wrap:wrap}
+    .seg button{white-space:nowrap}
+    .opt-row{flex-wrap:wrap;gap:6px 10px}
+    .opt-hint{display:none}
+  }
   @media(max-width:700px){
     main{padding:16px 12px 70px}
+    header{padding:8px 10px;gap:6px}
+    .logo{font-size:15px;gap:7px}
+    .logo-mark{width:26px;height:26px}
+    .logo-mark svg{width:15px;height:15px}
+    #modeBadge{display:none}
+    .btn{padding:7px 10px;font-size:12px}
     .pagehead{flex-direction:column;gap:6px}
+    .pagehead h1{font-size:17px}
     .pagehead .spacer{display:none}
     #grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:9px}
-    #queue{left:12px;right:12px;width:auto}
-    .opt-label{width:88px}
-    .opt-hint{display:none}
+    .thumb{height:110px}
+    #queue{left:12px;right:12px;width:auto;bottom:12px;max-height:55vh}
+    /* 设置行改为「标签一行 + 按钮组换行」，避免 CDN 线路组撑破屏幕 */
+    .opt-row{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center}
+    .opt-label{width:auto}
+    .opt-row .seg{justify-self:start}
     .url-row{flex-wrap:wrap}
     .url-row .btn{flex:1}
+    /* iOS 聚焦输入框自动放大问题：小屏输入字号提到 16px */
+    .search input,.url-row input,.modal input,.link-row input{font-size:16px}
+    .toolbar{margin:14px 0 10px}
+    .toolbar .seg button{padding:5px 8px;font-size:11.5px}
+    .dz-title{font-size:14px}
+    .dz-sub{font-size:11.5px}
+    .dz-buttons{flex-wrap:wrap}
+    #toasts{left:12px;right:12px;top:56px}
+    .toast{max-width:none}
+    .modal-mask{padding:12px}
+    .modal{padding:18px}
+    .lb-img{max-width:96vw;max-height:78vh}
+    .lb-prev{left:8px}
+    .lb-next{right:8px}
+  }
+  /* 触屏设备（手机 / iPad）：没有 hover，卡片操作按钮常显 */
+  @media(hover:none){
+    .card-actions{opacity:1}
+    .file-card:hover{transform:none}
+  }
+  /* 小屏手机：header 允许换行，API 按钮收成纯图标 */
+  @media(max-width:480px){
+    header{flex-wrap:wrap}
+    #btnApi span{display:none}
   }
 </style>
 </head>

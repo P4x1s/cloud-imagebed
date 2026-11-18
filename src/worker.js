@@ -32,7 +32,7 @@
 
 import uiHtml from './ui.html';
 
-const APP_VERSION = '2.6.0';
+const APP_VERSION = '2.6.1';
 const SESSION_TTL = 7 * 24 * 3600; // 会话有效期 7 天（秒）
 const COOKIE_NAME = 'cfib_session';
 // Turnstile 站点密钥是公开的（下发给前端渲染组件）；密钥是 Secret，只放在服务端。
