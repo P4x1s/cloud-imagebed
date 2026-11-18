@@ -7,3 +7,8 @@ GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # 前端登录口令（自定义一个强口令）
 ACCESS_PASSWORD=change-me-to-a-strong-password
+
+# Cloudflare Turnstile 密钥（登录人机校验，Secret 只放服务端，切勿提交）
+# 站点密钥是公开的，已内置在代码中：0x4AAAAAAGHCDGptGjnrqwmc
+# 不填则禁用人机校验；填写后登录必须先通过 Turnstile
+TURNSTILE_SECRET_KEY=

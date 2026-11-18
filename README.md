@@ -14,10 +14,12 @@
 
 > 用途：先确认界面和交互是否符合你的预期，再决定是否部署线上版。
 
-已实现的功能（v2.2.2，界面为克制的工具风格，无营销文案与无效开关）：
+已实现的功能（v2.3.0，界面为克制的工具风格，无营销文案与无效开关）：
 - **多种上传方式**：拖拽、点击选择、`Ctrl/⌘ + V` 剪贴板粘贴、选择整个文件夹、URL 一键转存
-- **默认 WebP 视觉无损压缩**：上传图片固定转为 WebP 并**同时保留原图**（两份都存）；保持原始分辨率不缩放，小图质量 0.92、大于 1MB 的图质量 0.95（高清完整）。GIF 等动图与普通文件不转换
-- **默认只显示 WebP**：文件库默认筛选「WebP」，自动隐藏保留的原图；点「全部 / 图片」可查看原图。视频、文档等非图片始终显示
+- **静态图片转 WebP 视觉无损压缩**：png/jpg/jpeg/bmp 等静态图片固定转为 WebP 并**同时保留原图**（两份都存）；保持原始分辨率不缩放，小图质量 0.92、大于 1MB 的图质量 0.95（高清完整）
+- **GIF 动图无损压缩**：GIF 不走 Canvas，直接在二进制层做 LZW 字典重编码 + 剥离注释/冗余元数据，像素索引、帧数、延时、处置方式、透明色、循环全部原样保留（真正无损、动画不丢），保持 `.gif` 格式；解析异常自动回退原文件
+- **登录 Turnstile 人机验证**：登录前需通过 Cloudflare Turnstile 校验（站点密钥公开下发、密钥只在服务端），未配置密钥时自动关闭；Demo 模式跳过
+- **默认只显示 WebP**：文件库默认筛选「WebP」，自动隐藏保留的原图（GIF 动图始终显示）；点「全部 / 图片」可查看原图。视频、文档等非图片始终显示
 - **并发上传队列**：可选 1/3/5/10 并发，队列项带缩略图预览与实时进度
 - **CDN 线路切换**：默认 raw / jsDelivr / 国内镜像 / Worker 中继（自定义 `PUBLIC_BASE` 时多一项）；直链加载失败自动降级中继
 - **图片即时缩略图预览 + 大图灯箱**（← → 切换、Esc 关闭）
@@ -72,6 +74,7 @@
 - 线上：在 Dashboard → Worker → Settings → Variables and Secrets 添加：
   - `GITHUB_TOKEN` = 上面的 token
   - `ACCESS_PASSWORD` = 自定义访问口令
+  - `TURNSTILE_SECRET_KEY` = Cloudflare Turnstile 密钥（登录人机校验用；站点密钥已内置在代码中公开下发，密钥绝不写进仓库）
 
 **4. 部署**
 ```bash
@@ -80,7 +83,9 @@ wrangler deploy --keep-vars
 ```
 或推送到 GitHub 触发 `.github/workflows/deploy.yml` 自动部署（需先在仓库 Secrets 配 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`）。
 
-> ⚠️ **关键提醒**：`wrangler deploy` 默认会清空 Dashboard 上的全部变量和 Secret。必须带 `--keep-vars`，否则 `GITHUB_TOKEN` / `ACCESS_PASSWORD` 会丢失，图床立刻不可用。GitHub Actions 里已内置该参数。
+> ⚠️ **关键提醒**：`wrangler deploy` 默认会清空 Dashboard 上的全部变量和 Secret。必须带 `--keep-vars`，否则 `GITHUB_TOKEN` / `ACCESS_PASSWORD` / `TURNSTILE_SECRET_KEY` 会丢失，图床立刻不可用。GitHub Actions 里已内置该参数。
+
+> 🔐 **Turnstile 说明**：登录页会在输入框下方渲染 Cloudflare Turnstile 组件，校验在服务端完成（`/api/login` 调用 `siteverify`，密钥只在 Worker Secret 里）。未设置 `TURNSTILE_SECRET_KEY` 时自动跳过验证（方便本地开发与平滑升级）；设置后登录必须先通过人机校验。Demo（本地 `demo.html`）始终跳过。
 
 **5. 访问**
 - 打开 `https://<你的worker名>.<你的子域>.workers.dev`，输入访问口令即可。

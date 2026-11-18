@@ -1,6 +1,6 @@
 # CloudImageBed 部署说明（P4x1s/cloud-imagebed）
 
-> ✅ **最终线上状态（2026-11-18 v2.2.2 更新）——以下为当前真实配置，下方历史步骤仅作背景参考：**
+> ✅ **最终线上状态（2026-11-18 v2.3.0 更新）——以下为当前真实配置，下方历史步骤仅作背景参考：**
 >
 > | 项目 | 当前状态 |
 > |------|----------|
@@ -12,7 +12,8 @@
 > | 目录结构 | 年月优先：`gallery/<YYYY>/<MM>/<时间戳文件名>`，如 `gallery/2026/11/2026111815365012.png` |
 > | 文件名规则 | 北京时间 `YYYYMMDDhhmmss` + 2 位毫秒 + 扩展名，共 16 位数字前缀，如 `2026111815365012.png` |
 > | 图片直链 | `https://raw.githubusercontent.com/P4x1s/cloud-imagebed/main/gallery/<YYYY>/<MM>/<时间戳文件名>` |
-> | **应用版本** | **v2.2.2**（2026-11-18）：UI 取长补短——去掉「输出格式」栏（上传固定转 WebP）、文件库默认只显示 WebP（原图仍保留、切「全部/图片」可看）、统计胶囊化、上传队列加缩略图、链接栏加「Markdown 带链接」+ 一键复制全部；顺带修复筛选/排序/视图切换不重渲染的既有 bug。v2.2.1：默认 WebP 视觉无损压缩（保分辨率、小图 0.92 / >1MB 0.95）+ 压缩版与原图两份都存。v2.2.0：PicGo 兼容、魔数校验+禁 SVG、CORS 白名单、错误人话化、CDN 镜像备选、Ctrl+K、Shift 范围选；单文件上限 50MB |
+> | **应用版本** | **v2.3.0**（2026-11-18）：静态图片(png/jpg/jpeg…)转 WebP 视觉无损压缩；GIF 动图走二进制 LZW 重编码无损压缩（保留格式/帧数/延时/循环/透明色，动画不丢）；登录页接入 Cloudflare Turnstile 人机验证（站点密钥 `0x4AAAAAAGHCDGptGjnrqwmc` 公开下发，密钥走 Worker Secret `TURNSTILE_SECRET_KEY`，未配置则自动跳过）。v2.2.2：去掉「输出格式」栏、文件库默认只显示 WebP、统计胶囊化、队列缩略图、Markdown 带链接 + 复制全部、修复筛选排序视图不重渲染。v2.2.0：PicGo 兼容、魔数校验+禁 SVG、CORS 白名单、错误人话化、CDN 镜像备选；单文件上限 50MB |
+> | Turnstile 密钥 | Cloudflare Worker Secret `TURNSTILE_SECRET_KEY`（只放 Dashboard，不进仓库）；站点密钥 `0x4AAAAAAGHCDGptGjnrqwmc` 公开内置于代码，无需手动配置 |
 > | 旧文件仓库 | `P4x1s/cloud-imagebed-file` 已停用（原有 1 张图已迁入项目 `gallery/`）；可自行决定是否删除 |
 > | 已完成清理 | 旧 `CGIH/storage` 分支已删除（SHA `d9db408...` 可恢复）；两个仓库已重命名 |
 > | 迁移清单 | 见 `MIGRATION_MANIFEST.md`、`REPO_MIGRATION_PLAN.md` |
@@ -140,14 +141,15 @@ git push -u origin main
 
 ## 第 3 步：在 Cloudflare 配置 Worker 运行时密钥（给 Worker 存文件 / 登录用）
 
-打开 https://dash.cloudflare.com → **Workers & Pages** → 找到 `cloud-imagebed`（首次部署后会出现）→ **Settings → Variables and Secrets** → **Add**，添加两条 **Secret**（务必选 Secret 类型，不要选 Variable）：
+打开 https://dash.cloudflare.com → **Workers & Pages** → 找到 `cloud-imagebed`（首次部署后会出现）→ **Settings → Variables and Secrets** → **Add**，添加三条 **Secret**（务必选 Secret 类型，不要选 Variable）：
 
 | Name | Value | 说明 |
 |------|-------|------|
 | `GITHUB_TOKEN` | 第 0 步的 `ghp_...` | Worker 用它在 storage 分支读写文件 |
 | `ACCESS_PASSWORD` | 你自定义的口令 | 前端登录用，例如 `MyImgBed@2026` |
+| `TURNSTILE_SECRET_KEY` | （填你自己的 Turnstile 密钥） | Turnstile 登录人机校验密钥（站点密钥公开无需配）；不填则跳过验证。⚠️ 密钥不要写进本文件，本文件会随仓库公开 |
 
-> ⚠️ 这两条**必须在 Cloudflare 配**，不能只放 GitHub。`wrangler.toml` 里刻意没写它们，Actions 部署时带了 `--keep-vars`，不会清空。
+> ⚠️ 这几条**必须在 Cloudflare 配**，不能只放 GitHub。`wrangler.toml` 里刻意没写它们，Actions 部署时带了 `--keep-vars`，不会清空。Turnstile 密钥只在服务端使用，切勿写进公开仓库。
 
 **关于其他变量**：`REPO=P4x1s/CGIH`、`BRANCH=storage`、`MAX_UPLOAD_MB=25` 等已在 `wrangler.toml` 里配好，Actions 部署会自动写入，无需在 Dashboard 重复配置。
 
@@ -232,7 +234,7 @@ A：检查 Cloudflare 的 `GITHUB_TOKEN` 是否配好、是否有 CGIH 的写权
 
 - [ ] GitHub Secrets：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 已添加
 - [ ] GitHub Variables：`WORKER_URL`（可选）
-- [ ] Cloudflare Secrets：`GITHUB_TOKEN`、`ACCESS_PASSWORD` 已添加
+- [ ] Cloudflare Secrets：`GITHUB_TOKEN`、`ACCESS_PASSWORD`、`TURNSTILE_SECRET_KEY` 已添加
 - [ ] GitHub 已有 `storage` 分支
 - [ ] `wrangler.toml` 的 REPO=`P4x1s/CGIH`、BRANCH=`storage`
 - [ ] Actions 部署运行成功（绿色）

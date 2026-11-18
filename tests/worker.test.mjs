@@ -18,6 +18,8 @@ const env = {
 const store = new Map(); // path -> { content(base64), sha }
 let shaCounter = 1000;
 let trees404 = false; // 模拟空仓库（无提交）→ git/trees 返回 404
+let turnstileValid = true; // 模拟 siteverify 结果
+let turnstileCalls = 0; // 记录 siteverify 调用次数
 const origFetch = globalThis.fetch;
 globalThis.fetch = async (url, opts = {}) => {
   url = String(url);
@@ -32,6 +34,11 @@ globalThis.fetch = async (url, opts = {}) => {
     return new Response(bytes, { status });
   }
 
+  // Turnstile siteverify
+  if (url.includes('challenges.cloudflare.com/turnstile/v0/siteverify')) {
+    turnstileCalls++;
+    return resp({ success: turnstileValid, hostname: 'example.workers.dev' });
+  }
   // Git Trees 递归列出
   if (url.includes('/git/trees/') && url.includes('recursive=1') && method === 'GET') {
     if (trees404) return resp({ message: 'Not Found', status: '404' }, 404);
@@ -186,7 +193,7 @@ r = await worker.fetch(req('/'), env);
 check('homepage html', r.headers.get('Content-Type').includes('text/html') && (await r.text()).includes('CloudImageBed'));
 r = await worker.fetch(req('/health'), env);
 d = await r.json();
-check('health version', d.version === '2.2.2');
+check('health version', d.version === '2.3.0');
 
 // 10) 年月优先目录（线上真实配置：DIR_PREFIX 为空）—— 所有类型都落到 YYYY/MM/
 const envClean = { ...env, DIR_PREFIX: '' };
@@ -228,7 +235,7 @@ if (bigItem) {
 // 11) config v2 新字段
 r = await worker.fetch(req('/api/config'), env);
 d = await r.json();
-check('config version 2', d.version === '2.2.2');
+check('config version 2', d.version === '2.3.0');
 check('config maxUploadMB default', d.maxUploadMB === 25, 'maxUploadMB=' + d.maxUploadMB);
 check('config repo/branch', d.repo === 'test/repo' && d.branch === 'main');
 check('config features', !!(d.features && d.features.urlUpload && d.features.batchDelete && d.features.cdnSwitch && d.features.convert && d.features.paste));
@@ -331,6 +338,56 @@ check('cors origin allowed -> echoed', r.headers.get('Access-Control-Allow-Origi
 check('cors never wildcard', r.headers.get('Access-Control-Allow-Origin') !== '*');
 r = await worker.fetch(req('/api/config', { method: 'OPTIONS', headers: { Origin: 'https://good.example' } }), envCors);
 check('cors preflight 204', r.status === 204);
+
+// 21) config 暴露 Turnstile 公开配置（站点密钥公开、是否启用看 Secret）
+r = await worker.fetch(req('/api/config'), env);
+d = await r.json();
+check('config turnstile siteKey public', d.turnstile && d.turnstile.siteKey === '0x4AAAAAAGHCDGptGjnrqwmc', JSON.stringify(d.turnstile));
+check('config turnstile disabled without secret', d.turnstile && d.turnstile.enabled === false);
+
+// 22) Turnstile：未配置 Secret 时登录不校验（向后兼容）
+r = await worker.fetch(req('/api/login', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: 'secret123' }),
+}), env);
+check('login works without turnstile secret', r.status === 200 && turnstileCalls === 0, 'status=' + r.status + ' calls=' + turnstileCalls);
+
+// 23) Turnstile：配置 Secret 后，缺 token → 403，且不签发 Cookie
+const envT = { ...env, TURNSTILE_SECRET_KEY: 'fake-turnstile-secret-for-test' };
+r = await worker.fetch(req('/api/config'), envT);
+d = await r.json();
+check('config turnstile enabled with secret', d.turnstile && d.turnstile.enabled === true);
+r = await worker.fetch(req('/api/login', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: 'secret123' }),
+}), envT);
+check('login missing turnstile token 403', r.status === 403, 'status=' + r.status);
+check('login missing token no cookie', !(r.headers.get('Set-Cookie') || '').includes('cfib_session'));
+
+// 24) Turnstile：校验失败 → 403
+turnstileValid = false;
+const callsBefore = turnstileCalls;
+r = await worker.fetch(req('/api/login', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: 'secret123', cfTurnstileResponse: 'bad-token' }),
+}), envT);
+check('login invalid turnstile 403', r.status === 403, 'status=' + r.status);
+check('siteverify called', turnstileCalls === callsBefore + 1, 'delta=' + (turnstileCalls - callsBefore));
+
+// 25) Turnstile：校验通过 + 正确口令 → 200 且签发 Cookie
+turnstileValid = true;
+r = await worker.fetch(req('/api/login', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: 'secret123', cfTurnstileResponse: 'good-token' }),
+}), envT);
+check('login valid turnstile 200', r.status === 200, 'status=' + r.status);
+check('login valid turnstile sets cookie', (r.headers.get('Set-Cookie') || '').includes('cfib_session'));
+// 口令错误但 Turnstile 通过 → 仍 401
+r = await worker.fetch(req('/api/login', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ password: 'wrong', cfTurnstileResponse: 'good-token' }),
+}), envT);
+check('wrong password still 401 with valid turnstile', r.status === 401, 'status=' + r.status);
 
 globalThis.fetch = origFetch;
 console.log('\n==== WORKER TEST RESULTS ====');

@@ -8,8 +8,9 @@
  *    注意：fine-grained token 对 Contents API 写操作会 403，不要用。
  * 3. wrangler.toml 里把 vars 改成你的值（REPO / BRANCH / DIR_PREFIX 等）。
  * 4. 在 Worker 的 Settings → Variables and Secrets 添加 Secret：
- *      GITHUB_TOKEN   = 上一步的 classic PAT
- *      ACCESS_PASSWORD = 访问口令（前端登录用）
+ *      GITHUB_TOKEN          = 上一步的 classic PAT
+ *      ACCESS_PASSWORD       = 访问口令（前端登录用）
+ *      TURNSTILE_SECRET_KEY  = Cloudflare Turnstile 密钥（前端登录人机校验）
  * 5. 部署：wrangler deploy --keep-vars  或  推送到 GitHub 触发 Actions。
  *    必须带 --keep-vars，否则会清空 Dashboard 上的 Secret。
  *
@@ -31,9 +32,12 @@
 
 import uiHtml from './ui.html';
 
-const APP_VERSION = '2.2.2';
+const APP_VERSION = '2.3.0';
 const SESSION_TTL = 7 * 24 * 3600; // 会话有效期 7 天（秒）
 const COOKIE_NAME = 'cfib_session';
+// Turnstile 站点密钥是公开的（下发给前端渲染组件）；密钥是 Secret，只放在服务端。
+const TURNSTILE_SITE_KEY = '0x4AAAAAAGHCDGptGjnrqwmc';
+const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 // GitHub 单文件建议上限 50MB（硬上限 100MB）；base64 后请求体膨胀约 1/3，
 // 且 Workers 单请求内存约 128MB，50MB 是兼顾稳定与安全的最大值。
 const DEFAULT_MAX_MB = 50;
@@ -133,6 +137,34 @@ function sessionCookie(token) {
   ];
   // 仅 https 请求加 Secure，便于本地 http 调试
   return parts.join('; ');
+}
+
+/* ---------------- Turnstile 人机校验 ----------------
+ * 只校验 Cloudflare 官方 siteverify 返回的 success，密钥不出服务端。
+ * 未配置 TURNSTILE_SECRET_KEY 时视为未启用（向后兼容 / 本地开发）。
+ */
+function turnstileEnabled(env) {
+  return Boolean(env.TURNSTILE_SECRET_KEY);
+}
+async function verifyTurnstile(token, secret, remoteip) {
+  if (!token || !secret) return false;
+  try {
+    const form = new URLSearchParams();
+    form.set('secret', secret);
+    form.set('response', String(token));
+    if (remoteip) form.set('remoteip', String(remoteip));
+    const r = await fetch(TURNSTILE_VERIFY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    return d && d.success === true;
+  } catch (e) {
+    return false;
+  }
 }
 
 /* ---------------- GitHub API 封装 ---------------- */
@@ -372,6 +404,10 @@ async function handleConfig(request, env) {
       // 第三方客户端用 Bearer 口令鉴权；提示占位，不回传真实口令
       endpoint: '/api/upload',
     },
+    turnstile: {
+      enabled: turnstileEnabled(env),
+      siteKey: TURNSTILE_SITE_KEY,
+    },
     features: { urlUpload: true, batchDelete: true, cdnSwitch: true, convert: true, paste: true, picgo: true },
     configured: authEnabled(env),
     version: APP_VERSION,
@@ -382,6 +418,14 @@ async function handleLogin(request, env) {
   if (!env.ACCESS_PASSWORD) return json({ ok: true }); // 未启用口令
   let body;
   try { body = await request.json(); } catch (e) { return json({ ok: false, error: '请求格式错误' }, 400); }
+  // 人机校验：仅当服务端配置了 Turnstile 密钥时强制。
+  if (turnstileEnabled(env)) {
+    const token = body.cfTurnstileResponse || body['cf-turnstile-response'];
+    const ip = request.headers.get('CF-Connecting-IP') || '';
+    if (!(await verifyTurnstile(token, env.TURNSTILE_SECRET_KEY, ip))) {
+      return json({ ok: false, error: '人机验证未通过，请刷新后重试' }, 403);
+    }
+  }
   if (!safeEqual(body.password, env.ACCESS_PASSWORD)) {
     return json({ ok: false, error: '口令错误' }, 401);
   }
