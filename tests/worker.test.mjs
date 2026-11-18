@@ -186,7 +186,7 @@ r = await worker.fetch(req('/'), env);
 check('homepage html', r.headers.get('Content-Type').includes('text/html') && (await r.text()).includes('CloudImageBed'));
 r = await worker.fetch(req('/health'), env);
 d = await r.json();
-check('health version', d.version === '2.0.1');
+check('health version', d.version === '2.1.0');
 
 // 10) 年月优先目录（线上真实配置：DIR_PREFIX 为空）—— 所有类型都落到 YYYY/MM/
 const envClean = { ...env, DIR_PREFIX: '' };
@@ -228,7 +228,7 @@ if (bigItem) {
 // 11) config v2 新字段
 r = await worker.fetch(req('/api/config'), env);
 d = await r.json();
-check('config version 2', d.version === '2.0.1');
+check('config version 2', d.version === '2.1.0');
 check('config maxUploadMB default', d.maxUploadMB === 25, 'maxUploadMB=' + d.maxUploadMB);
 check('config repo/branch', d.repo === 'test/repo' && d.branch === 'main');
 check('config features', !!(d.features && d.features.urlUpload && d.features.batchDelete && d.features.cdnSwitch && d.features.convert && d.features.paste));
