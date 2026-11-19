@@ -32,7 +32,7 @@ jobs:
           node-version: '22'
 
       - name: Install wrangler
-        run: npm install -g wrangler@4.109.0
+        run: npm install -g wrangler@^4.109.0
 
       - name: Deploy
         env:
