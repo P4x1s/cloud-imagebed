@@ -32,7 +32,7 @@
 
 import uiHtml from './ui.html';
 
-const APP_VERSION = '2.6.2';
+const APP_VERSION = '2.7.0';
 const SESSION_TTL = 7 * 24 * 3600; // 会话有效期 7 天（秒）
 const COOKIE_NAME = 'cfib_session';
 // Turnstile 站点密钥是公开的（下发给前端渲染组件）；密钥是 Secret，只放在服务端。
@@ -47,10 +47,29 @@ const DIRECT_LIMIT = 1048576; // ≤1MB 走 Contents API，更大走 Git Data AP
 const REMOTE_TIMEOUT_MS = 30000;
 
 /* ---------------- 工具函数 ---------------- */
+/* 统一安全响应头：所有响应都带，防 MIME 嗅探 / 点击劫持 / Referer 泄露。
+   CSP 对主页面限制脚本来源；API JSON 不受影响。 */
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  // Turnstile 需要 challenges.cloudflare.com 的 script/frame；WASM 编码器走白名单 CDN。
+  'Content-Security-Policy': [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://cdn.jsdelivr.net https://fastly.jsdelivr.net https://cdn.jsdmirror.com https://gcore.jsdelivr.net",
+    "img-src 'self' data: blob: https:",
+    "style-src 'self' 'unsafe-inline'",
+    "connect-src 'self' https:",
+    "frame-src https://challenges.cloudflare.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+  ].join('; '),
+};
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8', ...headers },
+    headers: { 'Content-Type': 'application/json; charset=utf-8', ...SECURITY_HEADERS, ...headers },
   });
 }
 
@@ -136,8 +155,8 @@ function sessionCookie(token) {
   const parts = [
     `${COOKIE_NAME}=${token}`,
     'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${SESSION_TTL}`,
+    'Secure', // 会话 Cookie 始终加 Secure，防止明文链路泄露（本地 wrangler dev 亦走 https）
   ];
-  // 仅 https 请求加 Secure，便于本地 http 调试
   return parts.join('; ');
 }
 
@@ -311,26 +330,66 @@ function abToBase64(buf) {
 }
 
 /* ---------------- URL 上传：SSRF 防护 ---------------- */
+/* 私网 IPv4 判定（含全部保留段），供直接 IPv4 与 IPv6 内嵌 IPv4 复用。 */
+function ipv4Danger(a, b, c, d) {
+  return a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) || (a === 169 && b === 254) || a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) || (a === 192 && b === 0 && c === 2) ||
+    (a === 192 && b === 88 && c === 99) || (a === 198 && b >= 18 && b <= 19);
+}
+/* 把 IPv6 展开为 8 组 16bit 整数，并把末尾内嵌的点分 IPv4 归一为两组 hex。
+   返回 null 表示格式非法。 */
+function expandIPv6(ip6) {
+  let s = ip6.toLowerCase();
+  s = s.replace(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/, (full) => {
+    const p = full.split('.').map(Number);
+    if (p.some((n) => n > 255)) return full;
+    return ((p[0] << 8) | p[1]).toString(16) + ':' + ((p[2] << 8) | p[3]).toString(16);
+  });
+  let groups;
+  if (s.includes('::')) {
+    const parts = s.split('::');
+    if (parts.length > 2) return null;
+    const left = parts[0] ? parts[0].split(':').filter(Boolean) : [];
+    const right = parts[1] ? parts[1].split(':').filter(Boolean) : [];
+    const missing = 8 - left.length - right.length;
+    if (missing < 0) return null;
+    groups = left.concat(new Array(missing).fill('0'), right);
+  } else {
+    groups = s.split(':').filter(Boolean);
+  }
+  if (groups.length !== 8) return null;
+  const out = groups.map((g) => parseInt(g, 16));
+  return out.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff) ? null : out;
+}
+/* 动态 DNS 反解析服务（nip.io / sslip.io 等）可把任意公网域名指向 127.0.0.1，
+   是典型的 DNS rebinding SSRF 通道；图床转存无需此类域名，直接拒绝。 */
+const REBINDING_HOST = /(^|\.)(nip\.io|sslip\.io|xip\.io|localtest\.me|lvh\.me)$/;
 function urlDanger(raw) {
   let u;
   try { u = new URL(raw); } catch (e) { return 'URL 格式不正确'; }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return '仅支持 http / https 链接';
-  const host = u.hostname.toLowerCase();
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (host === 'localhost' || host === '0.0.0.0' || host.endsWith('.localhost') ||
-      host.endsWith('.local') || host.endsWith('.internal')) return '不允许访问本地地址';
-  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4) {
-    const a = +ipv4[1], b = +ipv4[2], c = +ipv4[3];
-    if (a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) ||
-        (a === 192 && b === 168) || (a === 169 && b === 254) || a >= 224 ||
-        (a === 100 && b >= 64 && b <= 127) || (a === 192 && b === 0 && c === 2) ||
-        (a === 192 && b === 88 && c === 99) || (a === 198 && b >= 18 && b <= 19)) {
-      return '不允许访问内网地址';
-    }
+      host.endsWith('.local') || host.endsWith('.internal') || REBINDING_HOST.test(host)) {
+    return '不允许访问本地地址';
   }
-  if (host.startsWith('[')) {
-    const ip6 = host.slice(1, -1).toLowerCase();
-    if (ip6 === '::1' || ip6 === '::' || /^(fc|fd|fe[89ab])/.test(ip6)) return '不允许访问内网地址';
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4 && ipv4Danger(+ipv4[1], +ipv4[2], +ipv4[3], +ipv4[4])) return '不允许访问内网地址';
+  if (host.includes(':')) {
+    const g = expandIPv6(host);
+    if (!g) return 'URL 格式不正确';
+    if (g.every((n) => n === 0)) return '不允许访问内网地址';            // ::
+    if (g.slice(0, 7).every((n) => n === 0) && g[7] === 1) return '不允许访问内网地址'; // ::1
+    if ((g[0] & 0xfe00) === 0xfc00) return '不允许访问内网地址';          // fc00::/7 ULA
+    if ((g[0] & 0xffc0) === 0xfe80) return '不允许访问内网地址';          // fe80::/10 link-local
+    // IPv4-mapped (::ffff:a.b.c.d) 与 IPv4-compatible (::a.b.c.d)：提取内嵌 IPv4 复查
+    if (g.slice(0, 5).every((n) => n === 0) && g[5] === 0xffff) {
+      if (ipv4Danger((g[6] >> 8) & 255, g[6] & 255, (g[7] >> 8) & 255, g[7] & 255)) return '不允许访问内网地址';
+    }
+    if (g.slice(0, 6).every((n) => n === 0) && (g[6] || g[7])) {
+      if (ipv4Danger((g[6] >> 8) & 255, g[6] & 255, (g[7] >> 8) & 255, g[7] & 255)) return '不允许访问内网地址';
+    }
   }
   return null;
 }
@@ -691,6 +750,9 @@ async function handleDownload(url, env) {
       'Content-Type': mime,
       'Content-Disposition': `${disposition}; filename*=UTF-8''${encodeURIComponent(name)}`,
       'Cache-Control': 'public, max-age=3600',
+      ...SECURITY_HEADERS,
+      // 下载代理按扩展名判定 MIME，禁止浏览器嗅探成可执行类型（如把 .txt 当 HTML 执行）
+      'Content-Security-Policy': "default-src 'none'; sandbox",
     },
   });
 }
@@ -718,6 +780,7 @@ export default {
       const allow = String(env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
       if (origin && allow.includes(origin)) {
         return new Response(null, { status: 204, headers: {
+          ...SECURITY_HEADERS,
           'Access-Control-Allow-Origin': origin,
           'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
@@ -726,7 +789,7 @@ export default {
           'Vary': 'Origin',
         } });
       }
-      return new Response(null, { status: 403 });
+      return new Response(null, { status: 403, headers: { ...SECURITY_HEADERS } });
     }
     const resp = await route(request, env);
     return applyCors(resp, request, env);
@@ -740,7 +803,7 @@ async function route(request, env) {
     // 前端页面
     if (path === '/' || path === '/index.html') {
       return new Response(uiHtml, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' },
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...SECURITY_HEADERS },
       });
     }
     // 健康检查 + 版本指纹（供部署自检用）

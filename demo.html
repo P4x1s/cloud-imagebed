@@ -1349,7 +1349,7 @@ Content-Type: application/json
     $('qSummary').textContent=done+'/'+queue.length+(errs?' · 失败 '+errs:'');
     $('queueList').innerHTML=queue.map(function(q){
       var cls=q.status==='ok'?'ok':q.status==='err'?'err':'';
-      var st=q.status==='ok'?'完成':q.status==='err'?('失败'+(q.error?' · '+q.error:'')):(q.pct+'%');
+      var st=q.status==='ok'?'完成':q.status==='err'?('失败'+(q.error?' · '+esc(q.error):'')):(q.pct+'%');
       var th=q.thumb?'<img class="q-thumb" src="'+esc(q.thumb)+'" alt="">':'<div class="q-thumb"></div>';
       return '<div class="q-item">'+th+'<div class="q-body"><div class="q-row"><span class="q-name" title="'+esc(q.name)+'">'+esc(q.name)+'</span>'+
         '<span class="q-status '+cls+'">'+st+'</span></div><div class="bar"><i class="'+cls+'" style="width:'+q.pct+'%"></i></div></div></div>';
